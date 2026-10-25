@@ -768,6 +768,29 @@ def turn_check(pts, vis, blob, tb, h):
 
 
 # --------------------------------------------------------------- drawing
+def blur_face(img, pts):
+    """Blur the head on the DISPLAY image only (measurements use the clean frame).
+    The region follows the face landmarks (nose, eyes, mouth, ears), so it still
+    covers the head when you turn sideways."""
+    ids = list(range(0, 11))                      # nose, eyes, ears, mouth
+    xs, ys = [pts[i][0] for i in ids], [pts[i][1] for i in ids]
+    span_x, span_y = max(xs) - min(xs), max(ys) - min(ys)
+    size = max(span_x, 1.3 * span_y, 30.0)
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2 - 0.1 * size
+    ax, ay = int(0.95 * size), int(1.15 * size)   # ellipse half-width / half-height
+    H, W = img.shape[:2]
+    x0, x1, y0, y1 = max(0, int(cx) - ax), min(W, int(cx) + ax), max(0, int(cy) - ay), min(H, int(cy) + ay)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return
+    k = max(3, int(size * 0.6)) | 1               # odd kernel size, scales with head size
+    roi = img[y0:y1, x0:x1]
+    blurred = cv2.GaussianBlur(roi, (k, k), 0)
+    m = np.zeros(roi.shape[:2], np.uint8)
+    cv2.ellipse(m, (int(cx) - x0, int(cy) - y0), (ax, ay), 0, 0, 360, 255, -1)
+    m = cv2.GaussianBlur(m, (0, 0), 6)[..., None] / 255.0     # soft edge
+    img[y0:y1, x0:x1] = (blurred * m + roi * (1 - m)).astype(np.uint8)
+
+
 def capsule(img, p1, p2, r, color):
     p1, p2, r = (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), max(2, int(r))
     cv2.line(img, p1, p2, color, 2 * r, cv2.LINE_AA)
@@ -1088,7 +1111,7 @@ def run_body_scan(args, age_range=None):
         # ---------------- start page: height entry
         if state == "height":
             preview_cm, _ = parse_height(height_text, height_unit)
-            out = frame.copy()
+            out = cv2.GaussianBlur(frame, (0, 0), 25)    # face is not shown on the start page
             draw_height_page(out, height_text, height_unit, preview_cm, height_err)
             cv2.imshow(WINDOW, out)
             code = cv2.waitKey(1)
@@ -1123,6 +1146,8 @@ def run_body_scan(args, age_range=None):
                 mask = np.squeeze(result.segmentation_masks[0].numpy_view())
                 blob, tb = person_blob(mask, pts)
         person = blob is not None
+        if pts is not None:
+            blur_face(out, pts)
 
         stable = motion.update(frame, mask)
         if not stable and was_stable:
