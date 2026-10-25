@@ -1,0 +1,3103 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..559426a
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,8 @@
++.venv/
++__pycache__/
++*.py[cod]
++.env
++.env.*
++!.env.example
++measurements.json
++*.log
+diff --git a/README.md b/README.md
+index b6fff09..7c1ef72 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1,83 @@
+-# Cal-Hacks-13.0
+\ No newline at end of file
++# Fit
++
++A runnable website combining the Figma Make interface, a private browser scanner adapted from test.py, and a local connection to the original Test2_paper.py scanner.
++
++## Start on Windows
++
++1. Install Node.js LTS and Python 3.11 or 3.12 if needed.
++2. Extract the complete project, including the model files in the root folder.
++3. Double-click **Start Fit.cmd**. The first run installs dependencies and builds the website.
++4. Open **http://localhost:8765** in Chrome or Edge. Keep the command window open.
++
++Alternatively, from the repository root:
++
++```powershell
++python -m venv .venv
++.\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt
++cd figma-web
++npm.cmd install
++npm.cmd run build
++cd ..
++.\.venv\Scripts\python.exe run_fit.py
++```
++
++If port 8765 is occupied, run `python run_fit.py --port 8766` using the same Python environment and open localhost:8766.
++
++## Scan your body
++
++**Browser scanner (primary):** Start body scan -> Enable camera -> enter height -> frame full body -> capture front -> continue to side -> capture side -> review -> Reveal. Keep the laptop fixed. Front: arms diagonally down, away from the torso, feet apart. Side: turn 90 degrees with arms down. Capture needs two seconds of stable positioning followed by multiple valid samples. Poor lighting or framing blocks capture rather than substituting sample numbers.
++
++**Original Python scanner (local alternative):** On the scan screen, enter height in the Original Python scanner panel and choose Use Python scanner. The browser camera stops, and Test2_paper.py opens its own camera window on this computer. Follow its front A-pose and hands-on-head full-turn instructions. Its results return automatically to the website after the turn completes. Close/cancel aborts the scan. This requires the local server and Python packages; it does not run on a hosted static website.
++
++No age prediction is performed by the integrated website. The other Python prototypes are preserved as references.
++
++## Compare a garment
++
++After review, add a garment name and paste its actual garment dimensions as CSV in centimeters:
++
++```csv
++size,bust,waist,hip
++S,95,75,100
++M,106,86,110
++L,120,100,124
++```
++
++These numbers are SYNTHETIC examples for testing, not a real seller's chart. Replace them with verified product dimensions. Omit unavailable columns. Recommended body-measurement charts are not garment dimensions. Product URL is currently a reference only; automatic fetching is not implemented.
++
++Size tabs update the fit zones from garment minus body measurements. The recommendation uses a transparent non-stretch heuristic and never invents missing chart measurements. Click a body-area marker to ask about that zone. Guidance is deterministic and local, not Claude-generated. Stretch, fabric behavior, back gaping and movement are not inferred.
++
++## Where the functions live
++
++- `figma-web/src/App.tsx`: original Figma layout, connected screens and shared state.
++- `figma-web/src/useBodyScanner.ts`: browser camera inference and capture state.
++- `figma-web/src/bodyMeasurements.ts`: silhouette/front/side geometry adapted from test.py.
++- `figma-web/src/PythonScanner.tsx`: local Python scan start/status/cancel UI.
++- `backend/scanner_runner.py`: runs the original Test2_paper.py, intercepts its final results, and closes its camera window after completion.
++- `run_fit.py`: loopback-only Python server serving the website and scanner endpoints.
++- `figma-web/src/fitEngine.ts`: chart validation, fit scoring and zone explanations.
++
++The model and WASM runtime are copied locally during build; no external inference service receives camera images. The original Python scanner files are unchanged. Browser scanning uses test.py's height-calibrated front/side ellipse approach, not Test2_paper.py's full-turn Cauchy method. The Python option runs that original full-turn method directly.
++
++## Privacy and limits
++
++Browser frames stay in the browser. Python-mode frames stay in the local Python process; no frame upload is implemented. Measurements live in UI memory; the local server temporarily holds a Python result until cancellation, replacement, or shutdown. Delete profile clears both stores when the server is available. There is no encrypted persistent profile or login.
++
++Camera estimates are experimental and have not been calibrated against tape measurements. Inseam may be missing; thigh uses an assumed depth ratio. The silhouette is an illustration, not a personalized 3D reconstruction. Test on multiple people and varied lighting before making accuracy claims.
++
++Automatic Amazon/Apify import, Convex persistence, Claude answers, and production deployment are not implemented. Static deployment supports the browser scanner; original Python scanning requires running the local companion on the shopper's computer. A cloud server webcam would belong to the server, not the shopper.
++
++## Development and checks
++
++```powershell
++cd figma-web
++npm.cmd run dev
++npm.cmd run typecheck
++npm.cmd test
++npm.cmd run build
++cd ..
++python -m unittest discover -s backend/tests -v
++```
++
++Vite serves the frontend on port 8443 during development. Use `run_fit.py` on 8765 for Python integration. Rebuild after editing before testing the integrated Python server.
++
++Checks include geometry/scaling, person-mask components and aspect ratio, chart validation, missing-zone behavior, recommendation changes, backend session/origin checks and Python-result conversion. Webcam accuracy still requires a real-person test.
+diff --git a/Start Fit.cmd b/Start Fit.cmd
+new file mode 100644
+index 0000000..716b8b5
+--- /dev/null
++++ b/Start Fit.cmd	
+@@ -0,0 +1,35 @@
++@echo off
++setlocal
++pushd "%~dp0"
++echo Preparing Fit. Keep this window open.
++where python >nul 2>nul
++if errorlevel 1 (
++  echo Python is required. Install Python 3.11 or 3.12 and enable Add Python to PATH.
++  pause
++  exit /b 1
++)
++where npm.cmd >nul 2>nul
++if errorlevel 1 (
++  echo Node.js LTS is required. Install it, then run this file again.
++  pause
++  exit /b 1
++)
++if not exist ".venv\Scripts\python.exe" python -m venv .venv
++if errorlevel 1 goto failed
++".venv\Scripts\python.exe" -m pip install -r backend\requirements.txt
++if errorlevel 1 goto failed
++pushd figma-web
++call npm.cmd install --no-audit --no-fund
++if errorlevel 1 goto failed
++call npm.cmd run build
++if errorlevel 1 goto failed
++popd
++echo Open http://localhost:8765 in Chrome or Edge.
++".venv\Scripts\python.exe" run_fit.py
++if errorlevel 1 goto failed
++popd
++exit /b 0
++:failed
++echo Setup did not finish. Copy the error above for help.
++pause
++exit /b 1
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+new file mode 100644
+index 0000000..8d014ef
+--- /dev/null
++++ b/backend/requirements.txt
+@@ -0,0 +1,3 @@
++numpy==1.26.4
++opencv-contrib-python==4.11.0.86
++mediapipe==0.10.21
+diff --git a/backend/scanner_runner.py b/backend/scanner_runner.py
+new file mode 100644
+index 0000000..78ed1cc
+--- /dev/null
++++ b/backend/scanner_runner.py
+@@ -0,0 +1,63 @@
++"""Run the unchanged Test2_paper desktop scanner and return a browser profile.
++
++The process owns the local camera. Frames never travel over HTTP.
++"""
++import importlib.util
++import json
++import math
++from pathlib import Path
++import sys
++from datetime import datetime, timezone
++
++LABELS = {'Bust / chest':'bust', 'Waist':'waist', 'Hips':'hip', 'Thigh':'thigh', 'Shoulder width':'shoulder', 'Inseam':'inseam'}
++
++def normalize_rows(rows, height_cm, turn_done):
++    measurements = {}
++    for label, value, uncertainty, note in rows:
++        if label in LABELS and value is not None:
++            if not isinstance(value, (int,float)) or not math.isfinite(value) or not 0 < value < 400:
++                raise ValueError(f'Invalid measurement: {label}')
++            measurements[LABELS[label]] = round(value,1)
++    if not all(k in measurements for k in ('bust','waist','hip')):
++        raise ValueError('Scanner did not produce bust, waist and hip estimates.')
++    return {'heightCm':height_cm,'measurementsCm':measurements,
++        'confidence':{k:'low' for k in measurements},
++        'source':'python','scannedAt':datetime.now(timezone.utc).isoformat(),
++        'notes':['Captured with the original Test2_paper.py scanner on this computer.',
++                 'Experimental estimates; accuracy has not been validated against a tape measure.',
++                 'Turn scan completed.' if turn_done else 'Turn incomplete: torso circumferences use assumed depth ratios.',
++                 'Thigh circumference uses an assumed depth ratio.']}
++
++def main():
++    root=Path(__file__).resolve().parents[1]
++    output=Path(sys.argv[1]).resolve()
++    height=float(sys.argv[2])
++    if not 100 <= height <= 250:
++        raise ValueError('Height must be 100–250 cm.')
++    spec=importlib.util.spec_from_file_location('fit_desktop_scanner',root/'Test2_paper.py')
++    module=importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    module.POSE_PATH=str(root/'pose_landmarker_heavy.task')
++    captures=0
++    finished=False
++    def save(rows, info, resolution, tilt, tilt_source):
++        nonlocal captures,finished
++        captures += 1
++        # The first result is front-only; wait for the turn or its explicit skip.
++        if captures < 2:
++            return
++        profile=normalize_rows(rows,height,bool(info['turn_done']))
++        output.write_text(json.dumps(profile,allow_nan=False),encoding='utf-8')
++        finished=True
++    module.save_json=save
++    original_wait=module.cv2.waitKey
++    def wait(delay):
++        return ord('q') if finished else original_wait(delay)
++    module.cv2.waitKey=wait
++    sys.argv=[str(root/'Test2_paper.py'),'--height-cm',str(height),'--no-voice']
++    module.main()
++    if not output.exists():
++        raise RuntimeError('Scan ended without measurements. Complete the front and turn steps before closing the window.')
++
++if __name__ == '__main__':
++    main()
+diff --git a/backend/tests/test_backend.py b/backend/tests/test_backend.py
+new file mode 100644
+index 0000000..bb36a42
+--- /dev/null
++++ b/backend/tests/test_backend.py
+@@ -0,0 +1,53 @@
++import importlib.util
++from pathlib import Path
++import threading
++import unittest
++import urllib.request
++import urllib.error
++import json
++ROOT=Path(__file__).resolve().parents[2]
++def load(name,path):
++    spec=importlib.util.spec_from_file_location(name,path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
++server=load('fitserver',ROOT/'run_fit.py')
++runner=load('scanner_runner',ROOT/'backend/scanner_runner.py')
++class BackendTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.http=server.ThreadingHTTPServer(('127.0.0.1',0),server.Handler)
++        cls.thread=threading.Thread(target=cls.http.serve_forever,daemon=True);cls.thread.start()
++        cls.base=f'http://127.0.0.1:{cls.http.server_port}'
++    @classmethod
++    def tearDownClass(cls):
++        cls.http.shutdown();cls.http.server_close();cls.thread.join()
++    def call(self,path,data=None,token=None,origin=None,host=None):
++        headers={}
++        if token:headers['X-Fit-Session']=token
++        if origin:headers['Origin']=origin
++        if host:headers['Host']=host
++        req=urllib.request.Request(self.base+path,data=json.dumps(data).encode() if data is not None else None,headers=headers)
++        try:
++            with urllib.request.urlopen(req) as r:return r.status,json.load(r)
++        except urllib.error.HTTPError as e:return e.code,json.load(e)
++    def test_health(self):
++        status,data=self.call('/api/health');self.assertEqual(status,200);self.assertTrue(data['ok']);self.assertIn('sessionToken',data)
++    def test_session_required(self):
++        self.assertEqual(self.call('/api/scan')[0],403)
++        self.assertEqual(self.call('/api/scan',{'heightCm':165})[0],403)
++    def test_cross_origin_cannot_launch_camera(self):
++        self.assertEqual(self.call('/api/scan',{'heightCm':165},server.TOKEN,'https://other.example')[0],403)
++    def test_untrusted_host(self):
++        self.assertEqual(self.call('/api/health',host='other.example')[0],403)
++    def test_height_validation(self):
++        self.assertEqual(self.call('/api/scan',{'heightCm':0},server.TOKEN)[0],400)
++    def test_delete_clears_profile(self):
++        server.JOB={'status':'complete','profile':{'private':'test'}}
++        self.assertEqual(self.call('/api/scan/cancel',{},server.TOKEN)[0],200)
++        self.assertEqual(self.call('/api/scan',token=server.TOKEN)[1],{'status':'cancelled'})
++    def test_original_python_rows_map_to_browser_profile(self):
++        rows=[('Bust / chest',104,2,''),('Waist',82,2,''),('Hips',112,2,''),('Inseam',None,None,'')]
++        profile=runner.normalize_rows(rows,165,True)
++        self.assertEqual(profile['source'],'python');self.assertEqual(profile['measurementsCm']['bust'],104)
++        self.assertNotIn('inseam',profile['measurementsCm'])
++        with self.assertRaises(ValueError):runner.normalize_rows([],165,True)
++
++if __name__=='__main__':unittest.main()
+diff --git a/figma-web/.figma/make/site.json b/figma-web/.figma/make/site.json
+index 5086719..4939a1d 100644
+--- a/figma-web/.figma/make/site.json
++++ b/figma-web/.figma/make/site.json
+@@ -6,5 +6,6 @@
+   "accessibility": {
+     "addBypassLinks": false,
+     "ignoreReducedMotion": false
+-  }
+-}
+\ No newline at end of file
++  },
++  "title": "Fit \u2014 Your private fitting room"
++}
+diff --git a/figma-web/.gitignore b/figma-web/.gitignore
+index d0cb07a..512c43a 100644
+--- a/figma-web/.gitignore
++++ b/figma-web/.gitignore
+@@ -19,3 +19,7 @@ logs/
+ # beside it.
+ /.plugins/
+ /.opencode-skills/
++
++# Generated from repository model and npm package
++public/models/
++public/wasm/
+diff --git a/figma-web/package-lock.json b/figma-web/package-lock.json
+new file mode 100644
+index 0000000..9bdecf5
+--- /dev/null
++++ b/figma-web/package-lock.json
+@@ -0,0 +1,1781 @@
++{
++  "name": "figma-make-app",
++  "version": "1.0.0",
++  "lockfileVersion": 3,
++  "requires": true,
++  "packages": {
++    "": {
++      "name": "figma-make-app",
++      "version": "1.0.0",
++      "dependencies": {
++        "@mediapipe/tasks-vision": "0.10.21",
++        "react": "^19.0.0",
++        "react-dom": "^19.0.0"
++      },
++      "devDependencies": {
++        "@tailwindcss/vite": "^4.0.0",
++        "@types/node": "^22.0.0",
++        "@types/react": "^19.0.0",
++        "@types/react-dom": "^19.0.0",
++        "@vitejs/plugin-react": "^6.0.0",
++        "oxfmt": "^0.2.0",
++        "tailwindcss": "^4.0.0",
++        "typescript": "^5.7.0",
++        "vite": "^8.0.5"
++      }
++    },
++    "node_modules/@jridgewell/gen-mapping": {
++      "version": "0.3.13",
++      "resolved": "https://registry.npmjs.org/@jridgewell/gen-mapping/-/gen-mapping-0.3.13.tgz",
++      "integrity": "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@jridgewell/sourcemap-codec": "^1.5.0",
++        "@jridgewell/trace-mapping": "^0.3.24"
++      }
++    },
++    "node_modules/@jridgewell/remapping": {
++      "version": "2.3.5",
++      "resolved": "https://registry.npmjs.org/@jridgewell/remapping/-/remapping-2.3.5.tgz",
++      "integrity": "sha512-LI9u/+laYG4Ds1TDKSJW2YPrIlcVYOwi2fUC6xB43lueCjgxV4lffOCZCtYFiH6TNOX+tQKXx97T4IKHbhyHEQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@jridgewell/gen-mapping": "^0.3.5",
++        "@jridgewell/trace-mapping": "^0.3.24"
++      }
++    },
++    "node_modules/@jridgewell/resolve-uri": {
++      "version": "3.1.2",
++      "resolved": "https://registry.npmjs.org/@jridgewell/resolve-uri/-/resolve-uri-3.1.2.tgz",
++      "integrity": "sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=6.0.0"
++      }
++    },
++    "node_modules/@jridgewell/sourcemap-codec": {
++      "version": "1.6.0",
++      "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.6.0.tgz",
++      "integrity": "sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/@jridgewell/trace-mapping": {
++      "version": "0.3.31",
++      "resolved": "https://registry.npmjs.org/@jridgewell/trace-mapping/-/trace-mapping-0.3.31.tgz",
++      "integrity": "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@jridgewell/resolve-uri": "^3.1.0",
++        "@jridgewell/sourcemap-codec": "^1.4.14"
++      }
++    },
++    "node_modules/@mediapipe/tasks-vision": {
++      "version": "0.10.21",
++      "resolved": "https://registry.npmjs.org/@mediapipe/tasks-vision/-/tasks-vision-0.10.21.tgz",
++      "integrity": "sha512-TuhKH+credq4zLksGbYrnvJ1aLIWMc5r0UHwzxzql4BHECJwIAoBR61ZrqwGOW6ZmSBIzU1t4VtKj8hbxFaKeA==",
++      "license": "Apache-2.0"
++    },
++    "node_modules/@oxc-project/types": {
++      "version": "0.155.0",
++      "resolved": "https://registry.npmjs.org/@oxc-project/types/-/types-0.155.0.tgz",
++      "integrity": "sha512-SeE8JPwW1xs1tHeNycjUtUBdhorRa8o4jlvjwk49R7/Z291i+4DQa7JJIgOm/TaYQZx+QrPQbVJ/9c8dMIZN8Q==",
++      "dev": true,
++      "license": "MIT",
++      "funding": {
++        "url": "https://github.com/sponsors/oxc-project"
++      }
++    },
++    "node_modules/@oxfmt/darwin-arm64": {
++      "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/@oxfmt/darwin-arm64/-/darwin-arm64-0.2.0.tgz",
++      "integrity": "sha512-NK7iEPqRovUvKac+4dn2ui8v5Y5q6UJ9v4z5Zjr5lmEzTlBwXToP3TwY75IAaCYeu0g8Es7ToJpS7qCQuxUhuA==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ]
++    },
++    "node_modules/@oxfmt/darwin-x64": {
++      "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/@oxfmt/darwin-x64/-/darwin-x64-0.2.0.tgz",
++      "integrity": "sha512-eXDgT+DbIMnA3sWE+w38rOvXaxkP4RvHi41rPpWb9XoRGbM+tOo0c8RYqCIX39n7PizOlbF/xUBh9nMhiW01wQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ]
++    },
++    "node_modules/@oxfmt/linux-arm64-gnu": {
++      "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/@oxfmt/linux-arm64-gnu/-/linux-arm64-gnu-0.2.0.tgz",
++      "integrity": "sha512-h4mw9/Lck5X/SU1RPE26VraoBJgn9SOoLl8GnaYvtmRBFHK0v+2KpnBSwMWeiaIxCdJSsrVc9mpKSOcPsen7Cg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@oxfmt/linux-arm64-musl": {
++      "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/@oxfmt/linux-arm64-musl/-/linux-arm64-musl-0.2.0.tgz",
++      "integrity": "sha512-kDZ/kVCgh9kSczMH2gPXZs+rsY/VcCQ1BoQnND8D3v1Le91LceJ5s/a4XBBA3ADI3NiPdqNmK2ssaxY4BfgXDg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "libc": [
++        "musl"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@oxfmt/linux-x64-gnu": {
++      "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/@oxfmt/linux-x64-gnu/-/linux-x64-gnu-0.2.0.tgz",
++      "integrity": "sha512-qvf6cNuf4z3yjzjSvg4Jwr88jDyeFaYPU+4dBWVr6fdWhAA+BIuIvurJWYQGvWNNSkobVWH3A7m+wp+h5fNsSg==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@oxfmt/linux-x64-musl": {
++      "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/@oxfmt/linux-x64-musl/-/linux-x64-musl-0.2.0.tgz",
++      "integrity": "sha512-D0rw4BVLHEbtMB6p9e+Ph7Y/56oD1DRP4Qcbbv1B1w0kJanWBB3vMH+v2rqgeYsErqJOtLpYRkPFmJSU9In2HA==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "libc": [
++        "musl"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@oxfmt/win32-arm64": {
++      "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/@oxfmt/win32-arm64/-/win32-arm64-0.2.0.tgz",
++      "integrity": "sha512-QM0fP8YUvBNyuNa6d+jNonV34A6zGvvQ2mX93wnERpX25jIbFKljKiKDiWo2M1nUsW8zL2z4ESEeaLO9bx8djg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ]
++    },
++    "node_modules/@oxfmt/win32-x64": {
++      "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/@oxfmt/win32-x64/-/win32-x64-0.2.0.tgz",
++      "integrity": "sha512-WkFXliDbwFiziBSfvWXeM0Y3x07Kxxrl39kgsp+N3n5QgzsM8q6qe094+OW+hItDQ+9SSd2y9u231sMCsKxlog==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ]
++    },
++    "node_modules/@rolldown/binding-android-arm-eabi": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-android-arm-eabi/-/binding-android-arm-eabi-1.2.15.tgz",
++      "integrity": "sha512-aLcgK9gIJ3YRvrrtfSBbRa27F5WrpiTaPulnFpsHPxpUHgFlSgnU4854MHwoRGEBhfRJDWCS2WQ7lIjskE9Olw==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-android-arm64": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-android-arm64/-/binding-android-arm64-1.2.15.tgz",
++      "integrity": "sha512-xD7DdZCrbThKuxNg7ooQmvp07ys4J/pnSEMTG3/OdOWl6daC67m/Q4fL78sRHMxTH/N4fGUbYhcPM0MF5WFHkg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-darwin-arm64": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-arm64/-/binding-darwin-arm64-1.2.15.tgz",
++      "integrity": "sha512-m2WuQ6r0B4OTYxyPpNLtXaMRbRDUbG8YQV2Q3KTdSSK8Th6KHCnC8jVCJt8bvYeSB5WivkkNbc85mKadaSdOxA==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-darwin-x64": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-x64/-/binding-darwin-x64-1.2.15.tgz",
++      "integrity": "sha512-5RtnsHM36nodM9WbMy+zip0LGS/G+y5wro5RHrpOlr4ac24+1zSi9kiV2MP1myZeZ/ifEHfulQcWjnAXzc2C2A==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-freebsd-x64": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-freebsd-x64/-/binding-freebsd-x64-1.2.15.tgz",
++      "integrity": "sha512-g3l09pyFqhu+135JKkbkwiKGQmwU5hUMUPJ4VdBADvuqR8d33L6H578rh8m7rtxbdp+VmX/+nzI7nvhSZlzpUQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-arm-gnueabihf": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm-gnueabihf/-/binding-linux-arm-gnueabihf-1.2.15.tgz",
++      "integrity": "sha512-nIe3VugI97nGQtspPxDqA4sXMUpeiocKIP/CqpY/u/vgbT+alX+cVxu1C/oVBPKg4feNTmYovE91v4DgXvXNwQ==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-arm64-gnu": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-gnu/-/binding-linux-arm64-gnu-1.2.15.tgz",
++      "integrity": "sha512-iTBjXx+B5QSvgI89lJfmqh4wTh8NabR1YZIIN3hNx4zSG0EVfVqkOvLulNpG4251pbd6/IAmZ/LefVk1Y4rPhw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-arm64-musl": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-musl/-/binding-linux-arm64-musl-1.2.15.tgz",
++      "integrity": "sha512-uN26XOnVR7rqQupG3V9oAG2EGGatWjcJHOeDOHUFCh4TBWmP2tHTFoVN13aYbwfm0aHqJAEmcwhAu6sooIjfqQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "libc": [
++        "musl"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-ppc64-gnu": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-ppc64-gnu/-/binding-linux-ppc64-gnu-1.2.15.tgz",
++      "integrity": "sha512-9nWkcdd+H+XhaA3fQIwpHnKIrfx/PQ6rO0pivr78Og07tXlUlctBBJoEYLPfhTmCR/QxEVdn6uPjHV5SymPhdw==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-s390x-gnu": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-s390x-gnu/-/binding-linux-s390x-gnu-1.2.15.tgz",
++      "integrity": "sha512-Ggh0ciFjLwIusLSLz7LZYEaGdxOAUJXI+Qu5JCbhPJJHEt8vP+IjRATTJheiJsdzzTYgUiHUiw3X1Ea3ZpMBdA==",
++      "cpu": [
++        "s390x"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-x64-gnu": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-gnu/-/binding-linux-x64-gnu-1.2.15.tgz",
++      "integrity": "sha512-FHg60rS6DBePAYZ9X9F67x+JObFdmgn6tupA1C/a3B+CufFmTD4mX+e8M75tCiAO3foR/6xwVBI0KQiI7sn/rw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-x64-musl": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-musl/-/binding-linux-x64-musl-1.2.15.tgz",
++      "integrity": "sha512-/cvV/7v5VGz/moiz0XKRj2dE8DzsKyhIu1KpOvJGPjRywg3yscON889UGvAe8zfiJLHup7VLjBduoGWi3HusWQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "libc": [
++        "musl"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-openharmony-arm64": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-openharmony-arm64/-/binding-openharmony-arm64-1.2.15.tgz",
++      "integrity": "sha512-MyzC5Hrv/sm+Z7TSGKP/j8001RO2xQm1zOpCNVL4j0cY/VhBZviludA2YFQ7i4lH6ZAXxQm0lcMdBzM+99mE7w==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openharmony"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-win32-arm64-msvc": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-arm64-msvc/-/binding-win32-arm64-msvc-1.2.15.tgz",
++      "integrity": "sha512-+PgYiS+AH5omy6L45ZLxybasauJaj3M8buoT83D+nzPmCayXlxUV9hydhciCKVyIg0B/v0BtXPDE1uGqNwCPpg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-win32-x64-msvc": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-x64-msvc/-/binding-win32-x64-msvc-1.2.15.tgz",
++      "integrity": "sha512-HFZd2QNQYn1JbIi+Hpd7H+r/lkWxcfIu28nirZ6eCn2LafuvmExMlb/P96Sfx5tf7pPArw39IdhmCF8vmV+NhQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/pluginutils": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.1.tgz",
++      "integrity": "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/@tailwindcss/node": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/node/-/node-4.3.3.tgz",
++      "integrity": "sha512-/T8IKEsf9VTU6tLjgC7+sv2mOPtQxzE2jMw7u4Tt40Tx+QSZxpzh95/H6cMKoja9XuW7iMdLJYBB0o9G1CaAgg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@jridgewell/remapping": "^2.3.5",
++        "enhanced-resolve": "^5.24.1",
++        "jiti": "^2.7.0",
++        "lightningcss": "1.32.0",
++        "magic-string": "^0.30.21",
++        "source-map-js": "^1.2.1",
++        "tailwindcss": "4.3.3"
++      }
++    },
++    "node_modules/@tailwindcss/oxide": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide/-/oxide-4.3.3.tgz",
++      "integrity": "sha512-krXjAikiaFSPaK/FkAQT5UTx3VormQaiZ5hBFlJZ9UFQGB/rwg1MZIhHAG9smMQRTdyJxP6Qt5MwMtdyU5FWrA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">= 20"
++      },
++      "optionalDependencies": {
++        "@tailwindcss/oxide-android-arm64": "4.3.3",
++        "@tailwindcss/oxide-darwin-arm64": "4.3.3",
++        "@tailwindcss/oxide-darwin-x64": "4.3.3",
++        "@tailwindcss/oxide-freebsd-x64": "4.3.3",
++        "@tailwindcss/oxide-linux-arm-gnueabihf": "4.3.3",
++        "@tailwindcss/oxide-linux-arm64-gnu": "4.3.3",
++        "@tailwindcss/oxide-linux-arm64-musl": "4.3.3",
++        "@tailwindcss/oxide-linux-x64-gnu": "4.3.3",
++        "@tailwindcss/oxide-linux-x64-musl": "4.3.3",
++        "@tailwindcss/oxide-wasm32-wasi": "4.3.3",
++        "@tailwindcss/oxide-win32-arm64-msvc": "4.3.3",
++        "@tailwindcss/oxide-win32-x64-msvc": "4.3.3"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-android-arm64": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-android-arm64/-/oxide-android-arm64-4.3.3.tgz",
++      "integrity": "sha512-Y85A2gmPSkl5Ve5qR86GL4HT509cFqQh1aes9p3sSkyTPwt0Pppf3GkwGe4JPACcRYjgJIEhQgM6dBClnr0NYw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">= 20"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-darwin-arm64": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-darwin-arm64/-/oxide-darwin-arm64-4.3.3.tgz",
++      "integrity": "sha512-BiaWatpBcERQFDlOjRDpIVXuFK5PJez5SA4JMg6VYZdBYU+qKfV/vqjcIs+IYmtitf1xYQZTwXvU/8y4lfZUGw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">= 20"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-darwin-x64": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-darwin-x64/-/oxide-darwin-x64-4.3.3.tgz",
++      "integrity": "sha512-fAeUqfV5ndhxRwai8cXGzdLvul9utWOmeTkv69unv4ZXixjn61Z+p9lCWdwOwA3TYboG3BwdVuN/RDjhBRl0mw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">= 20"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-freebsd-x64": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-freebsd-x64/-/oxide-freebsd-x64-4.3.3.tgz",
++      "integrity": "sha512-iyf5bV6+wnAlflVeEy7R25dupxTNECZN5QMI0qNT6eT+EgaGdZcKhGkr5SdoaWiLJ3spLqIY9VCeSGrwmtg4kw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": ">= 20"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-linux-arm-gnueabihf": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-linux-arm-gnueabihf/-/oxide-linux-arm-gnueabihf-4.3.3.tgz",
++      "integrity": "sha512-aAYUprJAJQWWbRrPvtjdroZ56Md+JM8pMiopS6xGEwDfLhqj+2ver2p4nU4Mb3CRqcMmNBjo8KkUgcxhkzVQGQ==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 20"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-linux-arm64-gnu": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-linux-arm64-gnu/-/oxide-linux-arm64-gnu-4.3.3.tgz",
++      "integrity": "sha512-nDxldcEENOxZRzC2uu9jrutZdAAQtb+8WWDCSnWL1zvBk1+FN+x6MtDViPB5AJMfttVCUhehGWus3XBPgatM/w==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 20"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-linux-arm64-musl": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-linux-arm64-musl/-/oxide-linux-arm64-musl-4.3.3.tgz",
++      "integrity": "sha512-Md44bD6veX/PC5iyF8cDVnw4HBIANZepRZZ7a8DQOvkfo5WUBwcp6iAuCUz23u+4SUkhJlD3eL7hNdW8ezd/kA==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "libc": [
++        "musl"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 20"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-linux-x64-gnu": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-linux-x64-gnu/-/oxide-linux-x64-gnu-4.3.3.tgz",
++      "integrity": "sha512-tx7us1muwOKAKWao2v/GaafFeQboE6aj88vC6ziN2NCGcRm8gWUhwjzg+YdVB1e4boAtdtma4L43onunI6NS4w==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 20"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-linux-x64-musl": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-linux-x64-musl/-/oxide-linux-x64-musl-4.3.3.tgz",
++      "integrity": "sha512-SJxX60smvHgasZoBy11dX6YRjXJFovwWBoedhbQPOBzgFWBHGB+TVPWB9BxzR7TTxU8FQZAI2AyiNCMzFm8Img==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "libc": [
++        "musl"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 20"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-wasm32-wasi": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-wasm32-wasi/-/oxide-wasm32-wasi-4.3.3.tgz",
++      "integrity": "sha512-jx1+rPhY/5Ympkktd656HBWEBLxP7dH06losBLjjf5vgCODXvi9KhtftWcMIwTFIDqBr7cRnQkdLnAG+IOlGvQ==",
++      "bundleDependencies": [
++        "@napi-rs/wasm-runtime",
++        "@emnapi/core",
++        "@emnapi/runtime",
++        "@tybys/wasm-util",
++        "@emnapi/wasi-threads",
++        "tslib"
++      ],
++      "cpu": [
++        "wasm32"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@emnapi/core": "^1.11.1",
++        "@emnapi/runtime": "^1.11.1",
++        "@emnapi/wasi-threads": "^1.2.2",
++        "@napi-rs/wasm-runtime": "^1.1.4",
++        "@tybys/wasm-util": "^0.10.2",
++        "tslib": "^2.8.1"
++      },
++      "engines": {
++        "node": ">=14.0.0"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-win32-arm64-msvc": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-win32-arm64-msvc/-/oxide-win32-arm64-msvc-4.3.3.tgz",
++      "integrity": "sha512-3rc292Ca2ceK6Ulcc/bAVnTs/3nDtoPhyEKlgPv+yQJQi/JS/AMJlqzxvlDacL1nekbrcf6bTqp/jV4qgnPxNQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">= 20"
++      }
++    },
++    "node_modules/@tailwindcss/oxide-win32-x64-msvc": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-win32-x64-msvc/-/oxide-win32-x64-msvc-4.3.3.tgz",
++      "integrity": "sha512-yJ0pwIVc/nYeGoV02WtsN8KYyLQv7kyI2wDnkezyJlGGjkd4QLwDGAwl47YpPJeuI0M0ObaXGSPjvWDPeTPggw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">= 20"
++      }
++    },
++    "node_modules/@tailwindcss/vite": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/@tailwindcss/vite/-/vite-4.3.3.tgz",
++      "integrity": "sha512-yYU8cogLeSh/ms2jh8Fj7jaba/EWa7Ja6GoUqYZaraEuCI5YS6ms6ObZgjjedm+jm6XZjdNRWBpPP6Z86oOxcw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@tailwindcss/node": "4.3.3",
++        "@tailwindcss/oxide": "4.3.3",
++        "tailwindcss": "4.3.3"
++      },
++      "peerDependencies": {
++        "vite": "^5.2.0 || ^6 || ^7 || ^8"
++      }
++    },
++    "node_modules/@types/node": {
++      "version": "22.20.5",
++      "resolved": "https://registry.npmjs.org/@types/node/-/node-22.20.5.tgz",
++      "integrity": "sha512-U2+DNr+wSjpsTS/wZGYHq7GcwfuSmKiKvoPvK22zwTlRhU91yOniN4qRR5KhIjvif7ysw/dz/hKmfDH0Ris4aA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "undici-types": "~6.21.0"
++      }
++    },
++    "node_modules/@types/react": {
++      "version": "19.3.0",
++      "resolved": "https://registry.npmjs.org/@types/react/-/react-19.3.0.tgz",
++      "integrity": "sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "csstype": "^3.2.2"
++      }
++    },
++    "node_modules/@types/react-dom": {
++      "version": "19.3.0",
++      "resolved": "https://registry.npmjs.org/@types/react-dom/-/react-dom-19.3.0.tgz",
++      "integrity": "sha512-ZI7bU42mZXXKHn/qNLEw2IrbiINU7X5+vfgdixBHkCNpYWXjKgfQ/P+uyGb5CjOLB9UcnTeg3rylQtV2hym44Q==",
++      "dev": true,
++      "license": "MIT",
++      "peerDependencies": {
++        "@types/react": "^19.3.0"
++      }
++    },
++    "node_modules/@vitejs/plugin-react": {
++      "version": "6.1.2",
++      "resolved": "https://registry.npmjs.org/@vitejs/plugin-react/-/plugin-react-6.1.2.tgz",
++      "integrity": "sha512-fhJNGUdscQa4HkI0xFxwonWyhnVReCPDbXI7FH7jmzpnVCrFQI7PRrhWecO263610vOrs9tr2Y4xcf8uAdFxbw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@rolldown/pluginutils": "^1.0.1"
++      },
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      },
++      "peerDependencies": {
++        "@rolldown/plugin-babel": "^0.1.7 || ^0.2.0",
++        "babel-plugin-react-compiler": "^1.0.0",
++        "oxc-transform-react": "^0.152.0",
++        "vite": "^8.0.0"
++      },
++      "peerDependenciesMeta": {
++        "@rolldown/plugin-babel": {
++          "optional": true
++        },
++        "babel-plugin-react-compiler": {
++          "optional": true
++        },
++        "oxc-transform-react": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/csstype": {
++      "version": "3.2.3",
++      "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
++      "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/detect-libc": {
++      "version": "2.1.2",
++      "resolved": "https://registry.npmjs.org/detect-libc/-/detect-libc-2.1.2.tgz",
++      "integrity": "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/enhanced-resolve": {
++      "version": "5.26.0",
++      "resolved": "https://registry.npmjs.org/enhanced-resolve/-/enhanced-resolve-5.26.0.tgz",
++      "integrity": "sha512-9vhedylFonb2YGogzUKX6+Ja72gOJbN1QHAqdrvqLwhdl/QWbKopzoUC9EbQNVsAns/bx/4uyqalrQAoy1IByw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "graceful-fs": "^4.2.4",
++        "tapable": "^2.3.3"
++      },
++      "engines": {
++        "node": ">=10.13.0"
++      }
++    },
++    "node_modules/fdir": {
++      "version": "6.5.0",
++      "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
++      "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=12.0.0"
++      },
++      "peerDependencies": {
++        "picomatch": "^3 || ^4"
++      },
++      "peerDependenciesMeta": {
++        "picomatch": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/fsevents": {
++      "version": "2.3.3",
++      "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
++      "integrity": "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==",
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": "^8.16.0 || ^10.6.0 || >=11.0.0"
++      }
++    },
++    "node_modules/graceful-fs": {
++      "version": "4.2.11",
++      "resolved": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
++      "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==",
++      "dev": true,
++      "license": "ISC"
++    },
++    "node_modules/jiti": {
++      "version": "2.7.0",
++      "resolved": "https://registry.npmjs.org/jiti/-/jiti-2.7.0.tgz",
++      "integrity": "sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==",
++      "dev": true,
++      "license": "MIT",
++      "bin": {
++        "jiti": "lib/jiti-cli.mjs"
++      }
++    },
++    "node_modules/lightningcss": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss/-/lightningcss-1.32.0.tgz",
++      "integrity": "sha512-NXYBzinNrblfraPGyrbPoD19C1h9lfI/1mzgWYvXUTe414Gz/X1FD2XBZSZM7rRTrMA8JL3OtAaGifrIKhQ5yQ==",
++      "dev": true,
++      "license": "MPL-2.0",
++      "dependencies": {
++        "detect-libc": "^2.0.3"
++      },
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      },
++      "optionalDependencies": {
++        "lightningcss-android-arm64": "1.32.0",
++        "lightningcss-darwin-arm64": "1.32.0",
++        "lightningcss-darwin-x64": "1.32.0",
++        "lightningcss-freebsd-x64": "1.32.0",
++        "lightningcss-linux-arm-gnueabihf": "1.32.0",
++        "lightningcss-linux-arm64-gnu": "1.32.0",
++        "lightningcss-linux-arm64-musl": "1.32.0",
++        "lightningcss-linux-x64-gnu": "1.32.0",
++        "lightningcss-linux-x64-musl": "1.32.0",
++        "lightningcss-win32-arm64-msvc": "1.32.0",
++        "lightningcss-win32-x64-msvc": "1.32.0"
++      }
++    },
++    "node_modules/lightningcss-android-arm64": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-android-arm64/-/lightningcss-android-arm64-1.32.0.tgz",
++      "integrity": "sha512-YK7/ClTt4kAK0vo6w3X+Pnm0D2cf2vPHbhOXdoNti1Ga0al1P4TBZhwjATvjNwLEBCnKvjJc2jQgHXH0NEwlAg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-darwin-arm64": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-darwin-arm64/-/lightningcss-darwin-arm64-1.32.0.tgz",
++      "integrity": "sha512-RzeG9Ju5bag2Bv1/lwlVJvBE3q6TtXskdZLLCyfg5pt+HLz9BqlICO7LZM7VHNTTn/5PRhHFBSjk5lc4cmscPQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-darwin-x64": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-darwin-x64/-/lightningcss-darwin-x64-1.32.0.tgz",
++      "integrity": "sha512-U+QsBp2m/s2wqpUYT/6wnlagdZbtZdndSmut/NJqlCcMLTWp5muCrID+K5UJ6jqD2BFshejCYXniPDbNh73V8w==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-freebsd-x64": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-freebsd-x64/-/lightningcss-freebsd-x64-1.32.0.tgz",
++      "integrity": "sha512-JCTigedEksZk3tHTTthnMdVfGf61Fky8Ji2E4YjUTEQX14xiy/lTzXnu1vwiZe3bYe0q+SpsSH/CTeDXK6WHig==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-linux-arm-gnueabihf": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm-gnueabihf/-/lightningcss-linux-arm-gnueabihf-1.32.0.tgz",
++      "integrity": "sha512-x6rnnpRa2GL0zQOkt6rts3YDPzduLpWvwAF6EMhXFVZXD4tPrBkEFqzGowzCsIWsPjqSK+tyNEODUBXeeVHSkw==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-linux-arm64-gnu": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-gnu/-/lightningcss-linux-arm64-gnu-1.32.0.tgz",
++      "integrity": "sha512-0nnMyoyOLRJXfbMOilaSRcLH3Jw5z9HDNGfT/gwCPgaDjnx0i8w7vBzFLFR1f6CMLKF8gVbebmkUN3fa/kQJpQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-linux-arm64-musl": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-musl/-/lightningcss-linux-arm64-musl-1.32.0.tgz",
++      "integrity": "sha512-UpQkoenr4UJEzgVIYpI80lDFvRmPVg6oqboNHfoH4CQIfNA+HOrZ7Mo7KZP02dC6LjghPQJeBsvXhJod/wnIBg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "libc": [
++        "musl"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-linux-x64-gnu": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-gnu/-/lightningcss-linux-x64-gnu-1.32.0.tgz",
++      "integrity": "sha512-V7Qr52IhZmdKPVr+Vtw8o+WLsQJYCTd8loIfpDaMRWGUZfBOYEJeyJIkqGIDMZPwPx24pUMfwSxxI8phr/MbOA==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-linux-x64-musl": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-musl/-/lightningcss-linux-x64-musl-1.32.0.tgz",
++      "integrity": "sha512-bYcLp+Vb0awsiXg/80uCRezCYHNg1/l3mt0gzHnWV9XP1W5sKa5/TCdGWaR/zBM2PeF/HbsQv/j2URNOiVuxWg==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "libc": [
++        "musl"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-win32-arm64-msvc": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-win32-arm64-msvc/-/lightningcss-win32-arm64-msvc-1.32.0.tgz",
++      "integrity": "sha512-8SbC8BR40pS6baCM8sbtYDSwEVQd4JlFTOlaD3gWGHfThTcABnNDBda6eTZeqbofalIJhFx0qKzgHJmcPTnGdw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-win32-x64-msvc": {
++      "version": "1.32.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-win32-x64-msvc/-/lightningcss-win32-x64-msvc-1.32.0.tgz",
++      "integrity": "sha512-Amq9B/SoZYdDi1kFrojnoqPLxYhQ4Wo5XiL8EVJrVsB8ARoC1PWW6VGtT0WKCemjy8aC+louJnjS7U18x3b06Q==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/magic-string": {
++      "version": "0.30.21",
++      "resolved": "https://registry.npmjs.org/magic-string/-/magic-string-0.30.21.tgz",
++      "integrity": "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@jridgewell/sourcemap-codec": "^1.5.5"
++      }
++    },
++    "node_modules/nanoid": {
++      "version": "3.3.20",
++      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.20.tgz",
++      "integrity": "sha512-uKdg2G3GNCKQn9byYOpxbGqrT2fGO5KRt5J/8b3pok8rT6qxGWF6hxMyJiEYtAf+FVyYuD9hRaDqX5uPFYJ4ZQ==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/ai"
++        }
++      ],
++      "license": "MIT",
++      "bin": {
++        "nanoid": "bin/nanoid.cjs"
++      },
++      "engines": {
++        "node": "^10 || ^12 || ^13.7 || ^14 || >=15.0.1"
++      }
++    },
++    "node_modules/oxfmt": {
++      "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/oxfmt/-/oxfmt-0.2.0.tgz",
++      "integrity": "sha512-99bPAiYDiYikUej8U0Slv8pcFVbMe38Ulm+T6bJ4KQgm+UsbgTKCBpWxbD/LRz1CuYw3PRpqfPv6AkQsIAo3Ag==",
++      "dev": true,
++      "license": "MIT",
++      "bin": {
++        "oxfmt": "bin/oxfmt"
++      },
++      "engines": {
++        "node": ">=8.*"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/Boshen"
++      },
++      "optionalDependencies": {
++        "@oxfmt/darwin-arm64": "0.2.0",
++        "@oxfmt/darwin-x64": "0.2.0",
++        "@oxfmt/linux-arm64-gnu": "0.2.0",
++        "@oxfmt/linux-arm64-musl": "0.2.0",
++        "@oxfmt/linux-x64-gnu": "0.2.0",
++        "@oxfmt/linux-x64-musl": "0.2.0",
++        "@oxfmt/win32-arm64": "0.2.0",
++        "@oxfmt/win32-x64": "0.2.0"
++      }
++    },
++    "node_modules/picocolors": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
++      "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
++      "dev": true,
++      "license": "ISC"
++    },
++    "node_modules/picomatch": {
++      "version": "4.0.7",
++      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz",
++      "integrity": "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=12"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/jonschlinkert"
++      }
++    },
++    "node_modules/postcss": {
++      "version": "8.5.31",
++      "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.31.tgz",
++      "integrity": "sha512-YUbWYCgErwnMAVkjUnYa+KlMBzGpHwiIt/DE7f0G33AuX2LH9UcTk6KgWxd3zRU+pN3u/C+Xl3EnMLM4Hea7Sg==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "opencollective",
++          "url": "https://opencollective.com/postcss/"
++        },
++        {
++          "type": "tidelift",
++          "url": "https://tidelift.com/funding/github/npm/postcss"
++        },
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/ai"
++        }
++      ],
++      "license": "MIT",
++      "dependencies": {
++        "nanoid": "^3.3.20",
++        "picocolors": "^1.1.1",
++        "source-map-js": "^1.2.2"
++      },
++      "engines": {
++        "node": "^10 || ^12 || >=14"
++      }
++    },
++    "node_modules/react": {
++      "version": "19.3.1",
++      "resolved": "https://registry.npmjs.org/react/-/react-19.3.1.tgz",
++      "integrity": "sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/react-dom": {
++      "version": "19.3.1",
++      "resolved": "https://registry.npmjs.org/react-dom/-/react-dom-19.3.1.tgz",
++      "integrity": "sha512-Y0bARz53lhEC1NMCASs0/j+faB/zqt3R8hpvg1e8+61ZVJ4UL0UdC4cBbXfZMcIuhrfgeILTLe+ZeBCavQPtKQ==",
++      "license": "MIT",
++      "dependencies": {
++        "scheduler": "^0.28.0"
++      },
++      "peerDependencies": {
++        "react": "^19.3.1"
++      }
++    },
++    "node_modules/rolldown": {
++      "version": "1.2.15",
++      "resolved": "https://registry.npmjs.org/rolldown/-/rolldown-1.2.15.tgz",
++      "integrity": "sha512-6odND+fel5zVw3I4Yc2e69gvguDnX0CAAGiNDZSq4ik5WUcaLrkD2GLuog0XcODbor31hZ5ayEMgVDno+KPV5g==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@oxc-project/types": "=0.155.0",
++        "@rolldown/pluginutils": "^1.0.0"
++      },
++      "bin": {
++        "rolldown": "bin/cli.mjs"
++      },
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      },
++      "optionalDependencies": {
++        "@rolldown/binding-android-arm-eabi": "1.2.15",
++        "@rolldown/binding-android-arm64": "1.2.15",
++        "@rolldown/binding-darwin-arm64": "1.2.15",
++        "@rolldown/binding-darwin-x64": "1.2.15",
++        "@rolldown/binding-freebsd-x64": "1.2.15",
++        "@rolldown/binding-linux-arm-gnueabihf": "1.2.15",
++        "@rolldown/binding-linux-arm64-gnu": "1.2.15",
++        "@rolldown/binding-linux-arm64-musl": "1.2.15",
++        "@rolldown/binding-linux-ppc64-gnu": "1.2.15",
++        "@rolldown/binding-linux-s390x-gnu": "1.2.15",
++        "@rolldown/binding-linux-x64-gnu": "1.2.15",
++        "@rolldown/binding-linux-x64-musl": "1.2.15",
++        "@rolldown/binding-openharmony-arm64": "1.2.15",
++        "@rolldown/binding-win32-arm64-msvc": "1.2.15",
++        "@rolldown/binding-win32-x64-msvc": "1.2.15"
++      }
++    },
++    "node_modules/scheduler": {
++      "version": "0.28.0",
++      "resolved": "https://registry.npmjs.org/scheduler/-/scheduler-0.28.0.tgz",
++      "integrity": "sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw==",
++      "license": "MIT"
++    },
++    "node_modules/source-map-js": {
++      "version": "1.2.2",
++      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.2.tgz",
++      "integrity": "sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==",
++      "dev": true,
++      "license": "BSD-3-Clause",
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/tailwindcss": {
++      "version": "4.3.3",
++      "resolved": "https://registry.npmjs.org/tailwindcss/-/tailwindcss-4.3.3.tgz",
++      "integrity": "sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/tapable": {
++      "version": "2.3.3",
++      "resolved": "https://registry.npmjs.org/tapable/-/tapable-2.3.3.tgz",
++      "integrity": "sha512-uxc/zpqFg6x7C8vOE7lh6Lbda8eEL9zmVm/PLeTPBRhh1xCgdWaQ+J1CUieGpIfm2HdtsUpRv+HshiasBMcc6A==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=6"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/webpack"
++      }
++    },
++    "node_modules/tinyglobby": {
++      "version": "0.2.17",
++      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz",
++      "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "fdir": "^6.5.0",
++        "picomatch": "^4.0.4"
++      },
++      "engines": {
++        "node": ">=12.0.0"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/SuperchupuDev"
++      }
++    },
++    "node_modules/typescript": {
++      "version": "5.9.3",
++      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
++      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "bin": {
++        "tsc": "bin/tsc",
++        "tsserver": "bin/tsserver"
++      },
++      "engines": {
++        "node": ">=14.17"
++      }
++    },
++    "node_modules/undici-types": {
++      "version": "6.21.0",
++      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
++      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/vite": {
++      "version": "8.3.5",
++      "resolved": "https://registry.npmjs.org/vite/-/vite-8.3.5.tgz",
++      "integrity": "sha512-z1YpjieJ9g0ebTmQpLBv/oq9E3F9EIlOe+7LahW8SrE3LTiG3udBRUXQOlYXP9b+IC2q2phHeVxj9xGlw34OEQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "lightningcss": "^1.33.0",
++        "picomatch": "^4.0.7",
++        "postcss": "^8.5.30",
++        "rolldown": "~1.2.14",
++        "tinyglobby": "^0.2.17"
++      },
++      "bin": {
++        "vite": "bin/vite.js"
++      },
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      },
++      "funding": {
++        "url": "https://github.com/vitejs/vite?sponsor=1"
++      },
++      "optionalDependencies": {
++        "fsevents": "~2.3.3"
++      },
++      "peerDependencies": {
++        "@types/node": "^20.19.0 || >=22.12.0",
++        "@vitejs/devtools": "^0.7.1 || ^0.8.0",
++        "esbuild": "^0.27.0 || ^0.28.0",
++        "jiti": ">=1.21.0",
++        "less": "^4.0.0",
++        "sass": "^1.70.0",
++        "sass-embedded": "^1.70.0",
++        "stylus": ">=0.54.8",
++        "sugarss": "^5.0.0",
++        "terser": "^5.16.0",
++        "tsx": "^4.8.1",
++        "yaml": "^2.4.2"
++      },
++      "peerDependenciesMeta": {
++        "@types/node": {
++          "optional": true
++        },
++        "@vitejs/devtools": {
++          "optional": true
++        },
++        "esbuild": {
++          "optional": true
++        },
++        "jiti": {
++          "optional": true
++        },
++        "less": {
++          "optional": true
++        },
++        "sass": {
++          "optional": true
++        },
++        "sass-embedded": {
++          "optional": true
++        },
++        "stylus": {
++          "optional": true
++        },
++        "sugarss": {
++          "optional": true
++        },
++        "terser": {
++          "optional": true
++        },
++        "tsx": {
++          "optional": true
++        },
++        "yaml": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss/-/lightningcss-1.33.0.tgz",
++      "integrity": "sha512-WkUDrojuJs0xkgGf2udWxa3yGBRxPtxUkB79i6aCZLRgc7PM8fZe9TosfPDcvEpQZbuFASnHYmRLBLUbmLOIIA==",
++      "dev": true,
++      "license": "MPL-2.0",
++      "dependencies": {
++        "detect-libc": "^2.0.3"
++      },
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      },
++      "optionalDependencies": {
++        "lightningcss-android-arm64": "1.33.0",
++        "lightningcss-darwin-arm64": "1.33.0",
++        "lightningcss-darwin-x64": "1.33.0",
++        "lightningcss-freebsd-x64": "1.33.0",
++        "lightningcss-linux-arm-gnueabihf": "1.33.0",
++        "lightningcss-linux-arm64-gnu": "1.33.0",
++        "lightningcss-linux-arm64-musl": "1.33.0",
++        "lightningcss-linux-x64-gnu": "1.33.0",
++        "lightningcss-linux-x64-musl": "1.33.0",
++        "lightningcss-win32-arm64-msvc": "1.33.0",
++        "lightningcss-win32-x64-msvc": "1.33.0"
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss-android-arm64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-android-arm64/-/lightningcss-android-arm64-1.33.0.tgz",
++      "integrity": "sha512-gEpRTalKdosp4Bb8qWtc2iOgE5SeIHlpS1up9bFq2wAyYhl1UdTObYiHe98zEM9SQvSoqQZ1IQD0JNpg3Ml5pg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss-darwin-arm64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-darwin-arm64/-/lightningcss-darwin-arm64-1.33.0.tgz",
++      "integrity": "sha512-Sciaz8eenNTKn9b3t7+xr0ipTp9YxKQY4npwQ3mrRuL0BAVHBLyZxofhaKBAVtzmtRZ/zTyo0/to4B1uWG/Djg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss-darwin-x64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-darwin-x64/-/lightningcss-darwin-x64-1.33.0.tgz",
++      "integrity": "sha512-Z5UPAxzrjlWNNyGy6i65cJzzvgJ5D3T6wMvs+gWpY9d7qRhANrxqAp6LhxIgZhWEw18RfJTGcRxjuLIBr+m8XQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss-freebsd-x64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-freebsd-x64/-/lightningcss-freebsd-x64-1.33.0.tgz",
++      "integrity": "sha512-QQM/Ti/hQajJwCY+RiWuCZ9sdtI/XQk7nDK5vC8kkdwixezOlDgvDx7+RT+QjK6FcFT4MpsuoBnHIo/O3StRRg==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss-linux-arm-gnueabihf": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm-gnueabihf/-/lightningcss-linux-arm-gnueabihf-1.33.0.tgz",
++      "integrity": "sha512-N7FVBe6iS24MlM6R/4RBTxGhQheZGs7tiQ9U32UtF75NzP5Q7xWPRqLBCKxlRQRk3rY1jCIPLzx7WzOhuUIRLQ==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss-linux-arm64-gnu": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-gnu/-/lightningcss-linux-arm64-gnu-1.33.0.tgz",
++      "integrity": "sha512-j2v/itmy4HlNxlc6voKXYgBqNi0Ng2LShg4z7GufpEgs05P+2suBVyi9I6YHq5uoVFx9ETin3eCEhLVyXGQnKg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss-linux-arm64-musl": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-musl/-/lightningcss-linux-arm64-musl-1.33.0.tgz",
++      "integrity": "sha512-yiO5ROMuYQgXbC60yjZU5CYSFZGKXL0HFATXt9mHJn1+zW55oCtMI9NfcVhYLMFDL7gV7oBPon/EmMMGg2OvtQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "libc": [
++        "musl"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss-linux-x64-gnu": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-gnu/-/lightningcss-linux-x64-gnu-1.33.0.tgz",
++      "integrity": "sha512-ar+Ju7LmcN0Jo4FpL4hpFybwNG9/3A/Br5KW2n2jyODg3MEZXaDYADdemoNS+BDNfMgKvylJLj4S5tyRActuAg==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "libc": [
++        "glibc"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss-linux-x64-musl": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-musl/-/lightningcss-linux-x64-musl-1.33.0.tgz",
++      "integrity": "sha512-RYiYbkokw0trfKqqzfF55lginwEPrD3OJDfTuJzFs1MK6iFnDenaz1fqLLtX4ITG3OktJQXOeTaw1awrBAlZPw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "libc": [
++        "musl"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss-win32-arm64-msvc": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-win32-arm64-msvc/-/lightningcss-win32-arm64-msvc-1.33.0.tgz",
++      "integrity": "sha512-1K+MPfLSFVpphzpdbfkhlWk6wBrTObBzS2T6db10PNOZgR9GoVsAWzwNyuhUYYbTp23j+4RrncfujZ4uAzXvwA==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/vite/node_modules/lightningcss-win32-x64-msvc": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-win32-x64-msvc/-/lightningcss-win32-x64-msvc-1.33.0.tgz",
++      "integrity": "sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    }
++  }
++}
+diff --git a/figma-web/package.json b/figma-web/package.json
+index a326897..0bd6974 100644
+--- a/figma-web/package.json
++++ b/figma-web/package.json
+@@ -7,11 +7,16 @@
+     "dev": "vite",
+     "build": "vite build",
+     "preview": "vite preview",
+-    "format": "oxfmt"
++    "format": "oxfmt",
++    "typecheck": "tsc --noEmit",
++    "test": "node --test tests/*.test.cjs",
++    "predev": "node scripts/prepare-assets.mjs",
++    "prebuild": "node scripts/prepare-assets.mjs"
+   },
+   "dependencies": {
+     "react": "^19.0.0",
+-    "react-dom": "^19.0.0"
++    "react-dom": "^19.0.0",
++    "@mediapipe/tasks-vision": "0.10.21"
+   },
+   "devDependencies": {
+     "@types/node": "^22.0.0",
+diff --git a/figma-web/pnpm-lock.yaml b/figma-web/pnpm-lock.yaml
+index e16a98a..e25fe15 100644
+--- a/figma-web/pnpm-lock.yaml
++++ b/figma-web/pnpm-lock.yaml
+@@ -8,6 +8,9 @@ importers:
+ 
+   .:
+     dependencies:
++      '@mediapipe/tasks-vision':
++        specifier: 0.10.21
++        version: 0.10.21
+       react:
+         specifier: ^19.0.0
+         version: 19.2.4
+@@ -45,6 +48,9 @@ importers:
+ 
+ packages:
+ 
++  '@mediapipe/tasks-vision@0.10.21':
++    resolution: {integrity: sha512-TuhKH+credq4zLksGbYrnvJ1aLIWMc5r0UHwzxzql4BHECJwIAoBR61ZrqwGOW6ZmSBIzU1t4VtKj8hbxFaKeA==}
++
+   '@emnapi/core@1.9.1':
+     resolution: {integrity: sha512-mukuNALVsoix/w1BJwFzwXBN/dHeejQtuVzcDsfOEsdpCumXb/E9j8w11h5S54tT1xhifGfbbSm/ICrObRb3KA==}
+ 
+@@ -542,6 +548,8 @@ packages:
+ 
+ snapshots:
+ 
++  '@mediapipe/tasks-vision@0.10.21': {}
++
+   '@emnapi/core@1.9.1':
+     dependencies:
+       '@emnapi/wasi-threads': 1.2.0
+diff --git a/figma-web/scripts/prepare-assets.mjs b/figma-web/scripts/prepare-assets.mjs
+new file mode 100644
+index 0000000..188cbf2
+--- /dev/null
++++ b/figma-web/scripts/prepare-assets.mjs
+@@ -0,0 +1,12 @@
++import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
++import { dirname, resolve } from 'node:path';
++import { fileURLToPath } from 'node:url';
++const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
++const model=resolve(root,'../pose_landmarker_heavy.task');
++if(!existsSync(model))throw new Error('Missing pose_landmarker_heavy.task in the repository root. Download the complete repository including model files.');
++mkdirSync(resolve(root,'public/models'),{recursive:true});
++mkdirSync(resolve(root,'public/wasm'),{recursive:true});
++copyFileSync(model,resolve(root,'public/models/pose_landmarker.task'));
++const wasm=resolve(root,'node_modules/@mediapipe/tasks-vision/wasm');
++for(const file of readdirSync(wasm))copyFileSync(resolve(wasm,file),resolve(root,'public/wasm',file));
++console.log('Local MediaPipe model and runtime are ready.');
+diff --git a/figma-web/src/App.tsx b/figma-web/src/App.tsx
+index d22aa70..30631d2 100644
+--- a/figma-web/src/App.tsx
++++ b/figma-web/src/App.tsx
+@@ -1,4 +1,9 @@
+-import { useEffect, useRef, useState } from 'react'
++import { PythonScanner } from './PythonScanner'
++import { answerFit, computeFit, parseChart, recommendation } from './fitEngine'
++import type { Garment, SizeFit } from './fitEngine'
++import { useBodyScanner } from './useBodyScanner'
++import type { BodyProfile } from './bodyMeasurements'
++import { useCallback, useEffect, useRef, useState } from 'react'
+ 
+ type Step = 'welcome' | 'scan' | 'review' | 'import' | 'compare' | 'questions'
+ type CameraState = 'idle' | 'loading' | 'ready' | 'denied' | 'error'
+@@ -31,15 +36,17 @@ function Button({ children, onClick, secondary = false, disabled = false, classN
+   return <button type={type} disabled={disabled} onClick={onClick} className={`btn ${secondary ? 'btn-secondary' : 'btn-primary'} ${className}`}>{children}</button>
+ }
+ 
+-function Silhouette({ heatmap = false, onArea }: { heatmap?: boolean; onArea?: (area: string) => void }) {
++function Silhouette({ heatmap = false, onArea, fit }: { heatmap?: boolean; onArea?: (area: string) => void; fit?: SizeFit }) {
++  const color = (zone: string) => `zone-${fit?.zones.find(z => z.zone === zone)?.status ?? 'unknown'}`
+   return (
+     <div className="silhouette-wrap" aria-label={heatmap ? 'Interactive body fit heatmap' : 'Body silhouette'}>
+-      <svg viewBox="0 0 240 420" role="img" aria-hidden={heatmap}>
+-        <ellipse cx="120" cy="47" rx="30" ry="35" className={heatmap ? 'zone-comfort' : 'body-fill'} />
+-        <path className={heatmap ? 'zone-snug' : 'body-fill'} d="M83 83c-15 11-23 39-19 71l8 73-17 151c-2 19 28 24 34 4l26-121h10l26 121c6 20 36 15 34-4l-17-151 8-73c4-32-4-60-19-71-18 9-56 9-74 0Z"/>
++      <svg viewBox="0 0 240 420" role="img" aria-label="Body fit silhouette">
++        <ellipse cx="120" cy="47" rx="30" ry="35" className="body-fill" />
++        <path className="body-fill" d="M83 83c-15 11-23 39-19 71l8 73-17 151c-2 19 28 24 34 4l26-121h10l26 121c6 20 36 15 34-4l-17-151 8-73c4-32-4-60-19-71-18 9-56 9-74 0Z"/>
+         {heatmap && <>
+-          <path className="zone-tight" d="M69 145c10 17 92 17 102 0l-3 47c-20 11-76 11-96 0Z"/>
+-          <path className="zone-loose" d="m72 205 96 0 7 56H65Z"/>
++          <path className={color('bust')} d="M70 105c20-10 80-10 100 0l1 40c-20 12-82 12-102 0Z"/>
++          <path className={color('waist')} d="M69 145c10 17 92 17 102 0l-3 47c-20 11-76 11-96 0Z"/>
++          <path className={color('hip')} d="m72 205 96 0 7 56H65Z"/>
+         </>}
+       </svg>
+       {heatmap && <>
+@@ -101,44 +108,74 @@ function Welcome({ go }: { go: (s: Step) => void }) {
+   </main>
+ }
+ 
+-function Scan({ go }: { go: (s: Step) => void }) {
++function Scan({ go, onProfile }: { go: (s: Step) => void; onProfile: (profile: BodyProfile) => void }) {
+   const videoRef = useRef<HTMLVideoElement>(null)
+   const streamRef = useRef<MediaStream | null>(null)
++  const canvasRef = useRef<HTMLCanvasElement>(null)
++  const requestRef = useRef(0)
+   const [camera, setCamera] = useState<CameraState>('idle')
+   const [stage, setStage] = useState(0)
+   const [height, setHeight] = useState('')
+   const [manual, setManual] = useState(false)
++  const scanner = useBodyScanner(camera === 'ready' && !manual, videoRef, canvasRef, Number(height))
++  const stopCamera = () => {
++    requestRef.current += 1
++    streamRef.current?.getTracks().forEach(t => t.stop())
++    streamRef.current = null
++    if (videoRef.current) videoRef.current.srcObject = null
++    setCamera('idle')
++  }
++  useEffect(() => {
++    if (scanner.profile) {
++      requestRef.current += 1
++      streamRef.current?.getTracks().forEach(t => t.stop())
++      onProfile(scanner.profile)
++      go('review')
++    }
++  }, [scanner.profile, onProfile, go])
+   const scanStages = [
+-    { title: 'Centre your face', short: 'Face calibration', detail: 'Move closer and place your face inside the oval. Keep a neutral expression and look straight ahead.', action: 'Confirm face position' },
++    { title: 'Check your camera', short: 'Camera setup', detail: 'Use even lighting and a stable laptop. We use your entered height for scale; face calibration is not needed.', action: 'Continue to height' },
+     { title: 'Add your height', short: 'Enter height', detail: 'Your height provides the scale needed to estimate proportions. We will never guess it from the camera.', action: 'Save height & continue' },
+     { title: 'Show your full body', short: 'Full-body framing', detail: 'Step back until your entire body—from the top of your head to the soles of your shoes—is visible.', action: 'Confirm full body is visible' },
+-    { title: 'Raise your arms into an A', short: 'A-pose', detail: 'Face forward and raise both arms diagonally above your shoulders to form an A shape. Keep your feet visible.', action: 'Confirm A-pose' },
+-    { title: 'Turn with hands on head', short: 'Side turn', detail: 'Place both hands on top of your head, then slowly turn to your left while keeping your whole body in frame.', action: 'Complete scan' },
++    { title: 'Raise your arms into an A', short: 'A-pose', detail: 'Face forward and hold both arms diagonally DOWN, about 45 degrees away from your body. Keep your feet visible.', action: scanner.frontDone ? 'Continue to side scan' : 'Capture front view' },
++    { title: 'Turn sideways, arms down', short: 'Side turn', detail: 'Lower both arms to your sides, then turn 90 degrees to your left while keeping your whole body in frame.', action: 'Capture side view' },
+   ]
+   const currentStage = scanStages[stage]
+ 
+   const startCamera = async () => {
++    const request = ++requestRef.current
++    streamRef.current?.getTracks().forEach(t => t.stop())
++    scanner.reset()
+     setCamera('loading')
+     try {
+-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
++      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
++      if (request !== requestRef.current) { stream.getTracks().forEach(t => t.stop()); return }
+       streamRef.current = stream
+       if (videoRef.current) videoRef.current.srcObject = stream
+       setCamera('ready')
+     } catch (error) {
++      if (request !== requestRef.current) return
+       setCamera(error instanceof DOMException && error.name === 'NotAllowedError' ? 'denied' : 'error')
+     }
+   }
+-  useEffect(() => () => streamRef.current?.getTracks().forEach(track => track.stop()), [])
++  useEffect(() => () => { requestRef.current += 1; streamRef.current?.getTracks().forEach(track => track.stop()) }, [])
+   const nextCapture = () => {
+-    if (stage === 1 && !height) return
+-    if (stage < scanStages.length - 1) setStage(stage + 1)
+-    else { streamRef.current?.getTracks().forEach(track => track.stop()); setTimeout(() => go('review'), 450) }
++    if (stage === 1 && !(Number(height) >= 100 && Number(height) <= 250)) return
++    if (stage === 3 && !scanner.frontDone) { scanner.capture('front'); return }
++    if (stage === 4) { scanner.capture('side'); return }
++    setStage(stage + 1)
+   }
+ 
+   if (manual) return <main className="page narrow">
+-    <div className="page-title"><span className="eyebrow">Manual fallback</span><h1>Enter what you know</h1><p>Approximate measurements are okay. We’ll lower confidence rather than guess.</p></div>
+-    <form className="card form-grid" onSubmit={e => { e.preventDefault(); go('review') }}>
+-      {['Height', 'Bust', 'Waist', 'Hips'].map((label, i) => <label key={label}>{label}<span><input required type="number" min="1" placeholder={i ? '—' : '165'} /><em>cm</em></span></label>)}
++    <div className="page-title"><span className="eyebrow">Manual fallback</span><h1>Enter what you know</h1><p>Enter tape measurements if the webcam scan cannot complete.</p></div>
++    <form className="card form-grid" onSubmit={e => {
++      e.preventDefault()
++      const data = new FormData(e.currentTarget)
++      const measurementsCm = { bust: Number(data.get('Bust')), waist: Number(data.get('Waist')), hip: Number(data.get('Hips')) }
++      onProfile({heightCm: Number(data.get('Height')), measurementsCm, confidence: {bust:'low',waist:'low',hip:'low'}, source:'manual', scannedAt:new Date().toISOString(), notes:['Manually entered measurements; not a webcam scan.']})
++      go('review')
++    }}>
++      {['Height', 'Bust', 'Waist', 'Hips'].map((label, i) => <label key={label}>{label}<span><input required name={label} type="number" min="1" max="400" step="0.1" placeholder={i ? '—' : '165'} /><em>cm</em></span></label>)}
+       <Button type="submit" className="full">Review my details <Icon name="arrow" /></Button>
+       <Button secondary onClick={() => setManual(false)} className="full">Back to camera</Button>
+     </form>
+@@ -150,7 +187,8 @@ function Scan({ go }: { go: (s: Step) => void }) {
+       <section className="camera-card">
+         <div className="camera-meta"><span>{currentStage.short}</span><small>{stage + 1} of {scanStages.length}</small></div>
+         <div className={`camera-view ${camera}`}>
+-          <video ref={videoRef} autoPlay muted playsInline />
++          <video ref={videoRef} autoPlay muted playsInline onLoadedMetadata={e => {const v=e.currentTarget;if(v.parentElement && v.videoWidth && v.videoHeight)v.parentElement.style.aspectRatio=`${v.videoWidth}/${v.videoHeight}`}} />
++          {camera === 'ready' && <canvas ref={canvasRef} aria-hidden="true" className="measurement-canvas" />}
+           {camera === 'ready' && stage !== 1 && <div className={`guide-outline stage-${stage}`}><span /></div>}
+           {camera === 'ready' && stage === 1 && <div className="height-prompt"><label>Your height<span><input aria-label="Height in centimetres" type="number" min="100" max="250" value={height} onChange={e => setHeight(e.target.value)} placeholder="165" /><em>cm</em></span></label><small>Enter your actual height so the scan can be scaled accurately.</small></div>}
+           {camera === 'idle' && <div className="camera-message"><span><Icon name="camera" /></span><h2>Camera access needed</h2><p>Your live preview stays in this browser.</p><Button onClick={startCamera}>Enable camera</Button></div>}
+@@ -158,12 +196,12 @@ function Scan({ go }: { go: (s: Step) => void }) {
+           {(camera === 'denied' || camera === 'error') && <div className="camera-message error"><h2>{camera === 'denied' ? 'Camera permission blocked' : 'Camera unavailable'}</h2><p>{camera === 'denied' ? 'Allow camera access in browser settings, then retry.' : 'Close other camera apps or use manual entry.'}</p><Button onClick={startCamera}>Try again</Button></div>}
+         </div>
+         <div className="capture-bar">
+-          <Button disabled={camera !== 'ready' || (stage === 1 && !height)} onClick={nextCapture}>{currentStage.action} <Icon name={stage === 4 ? 'check' : 'arrow'} /></Button>
+-          <button className="text-button" onClick={() => { setStage(0); setHeight(''); startCamera() }}>Start over</button>
+-        </div>
++          <Button disabled={camera !== 'ready' || !scanner.ready || scanner.capturing || (stage === 1 && !(Number(height) >= 100 && Number(height) <= 250))} onClick={nextCapture}>{scanner.capturing ? `Capturing ${scanner.progress}%` : currentStage.action} <Icon name={stage === 4 ? 'check' : 'arrow'} /></Button>
++          <button className="text-button" onClick={() => { scanner.reset(); setStage(0); setHeight('') }}>Start over</button>
++        <button className="text-button" onClick={stopCamera}>Stop camera</button></div>
+       </section>
+       <aside className="tips-card">
+-        <div className="progress-head"><span>Scan progress</span><b>{(stage + 1) * 20}%</b></div>
++        <div className="progress-head"><span>Guide progress</span><b>{(stage + 1) * 20}%</b></div>
+         <div className="progress"><i style={{ width: `${(stage + 1) * 20}%` }} /></div>
+         <h2>{currentStage.title}</h2>
+         <p>{currentStage.detail}</p>
+@@ -172,88 +210,115 @@ function Scan({ go }: { go: (s: Step) => void }) {
+             <span>{index < stage ? <Icon name="check" /> : index + 1}</span><b>{item.short}</b>
+           </li>)}
+         </ol>
+-        <div className="detection-note"><Icon name="camera" /><span><b>Pose detection is not active yet</b><small>Use the guide and confirm each position yourself. We won’t claim a pose was detected until browser-based MediaPipe is connected.</small></span></div>
+-        <button className="manual-link" onClick={() => { streamRef.current?.getTracks().forEach(t => t.stop()); setManual(true) }}>Can’t use your camera? <b>Enter manually</b></button>
++        <div className="detection-note"><Icon name="camera" /><span><b>Live measurement scanner</b><small role="status">{scanner.message}</small><small>Experimental estimates. Accuracy has not been validated against a tape measure.</small></span></div>
++        <PythonScanner heightCm={Number(height)} beforeStart={stopCamera} onProfile={p=>{onProfile(p);go('review')}}/>
++        <button className="manual-link" onClick={() => { stopCamera(); scanner.reset(); setManual(true) }}>Can’t use your camera? <b>Enter manually</b></button>
+       </aside>
+     </div>
+   </main>
+ }
+ 
+-function Review({ go }: { go: (s: Step) => void }) {
++function Review({ go, profile, onDelete }: { go: (s: Step) => void; profile: BodyProfile | null; onDelete: () => void }) {
+   const [revealed, setRevealed] = useState(false)
+   return <main className="page narrow-wide">
+-    <div className="page-title"><span className="eyebrow">Scan complete</span><h1>Your body profile</h1><p>Take a moment to review. You can rescan any time.</p></div>
++    <div className="page-title"><span className="eyebrow">{profile?.source === 'manual' ? 'Profile ready' : 'Scan complete'}</span><h1>Your body profile</h1><p>Take a moment to review. You can rescan any time.</p></div>
+     <div className="review-grid">
+-      <section className="card silhouette-card"><Silhouette /><div className="confidence"><span><Icon name="check" /></span><div><small>Scan confidence</small><b>Good</b></div></div></section>
++      <section className="card silhouette-card"><Silhouette /><div className="confidence"><span><Icon name="check" /></span><div><small>Measurement accuracy</small><b>Not validated</b></div></div></section>
+       <section className="card measurements">
+-        <div className="card-head"><div><span className="demo-pill">Demo mode</span><h2>Your measurements</h2></div><button className="reveal" onClick={() => setRevealed(!revealed)}><Icon name="eye" />{revealed ? 'Hide' : 'Reveal'}</button></div>
+-        <p>Measurements aren’t detected in this browser prototype. The values below are illustrative only.</p>
+-        {['Bust', 'Waist', 'Hips', 'Inseam'].map(label => <div className="measure-row" key={label}><span>{label}</span><b>{revealed ? 'Demo value' : '••••••••'}</b></div>)}
+-        <div className="review-actions"><Button onClick={() => go('import')}>Add a garment <Icon name="arrow" /></Button><Button secondary onClick={() => go('scan')}>Scan again</Button></div>
++        <div className="card-head"><div><span className="demo-pill">{profile?.source === 'manual' ? 'Manual entry' : 'Webcam estimates'}</span><h2>Your measurements</h2></div><button className="reveal" onClick={() => setRevealed(!revealed)}><Icon name="eye" />{revealed ? 'Hide' : 'Reveal'}</button></div>
++        <p>Measurements clear when you refresh. Python mode also holds its last result in local server memory until replaced or deleted. The silhouette is an illustration, not a fitted model.</p>
++        {([['Bust','bust'],['Waist','waist'],['Hips','hip'],['Thigh','thigh'],['Shoulder width','shoulder'],['Inseam','inseam']] as const).map(([label,key]) => <div className="measure-row" key={key}><span>{label}</span><b>{!revealed ? '••••••••' : profile?.measurementsCm[key] != null ? `${profile.measurementsCm[key]} cm` : 'Not captured'}</b></div>)}
++        <ul>{profile?.notes.map(note => <li key={note}>{note}</li>)}</ul>
++        <div className="review-actions"><Button onClick={() => go('import')}>Add a garment <Icon name="arrow" /></Button><Button secondary onClick={() => go('scan')}>Scan again</Button><button className="text-button" onClick={async()=>{try{const r=await fetch('/api/health');if(r.ok && r.headers.get('content-type')?.includes('application/json')){const h=await r.json();await fetch('/api/scan/cancel',{method:'POST',headers:{'X-Fit-Session':h.sessionToken}})}}catch{/* Browser-only mode has no server profile. */}onDelete()}}>Delete profile</button></div>
+       </section>
+     </div>
+   </main>
+ }
+ 
+-function ImportGarment({ go }: { go: (s: Step) => void }) {
+-  const [hasChart, setHasChart] = useState(true)
++function ImportGarment({ go, onGarment }: { go: (s: Step) => void; onGarment: (g: Garment) => void }) {
++  const [error, setError] = useState('')
+   return <main className="page narrow">
+-    <div className="page-title"><span className="eyebrow">Add a garment</span><h1>What are you considering?</h1><p>Paste a product link or add details yourself. We’ll use them only for this comparison.</p></div>
+-    <form className="card import-form" onSubmit={e => { e.preventDefault(); go('compare') }}>
+-      <label className="full">Product URL <span className="input-icon"><Icon name="link" /><input type="url" placeholder="https://shop.com/product" /></span></label>
+-      <div className="divider"><span>or add manually</span></div>
+-      <label>Garment name<input required placeholder="e.g. Linen wrap dress" /></label>
+-      <label>Fabric<select defaultValue="stretch"><option value="stretch">Stretch woven</option><option>Non-stretch woven</option><option>Knit</option></select></label>
+-      <label className="full">Product image<span className="upload"><Icon name="camera" /><span><b>Choose a product image</b><small>PNG or JPG, up to 8MB</small></span><input type="file" accept="image/*" /></span></label>
+-      <label className="full">Available sizes<input required placeholder="e.g. 14, 16, 18, 20, 22, 24" /></label>
+-      <label className="full">Size chart<textarea placeholder="Paste the brand’s size chart or key measurements" /></label>
+-      <label className="check-row full"><input type="checkbox" checked={!hasChart} onChange={e => setHasChart(!e.target.checked)} /><span><b>This product has no size chart</b><small>We can still offer general fabric and cut guidance.</small></span></label>
+-      {!hasChart && <div className="missing full"><b>Limited comparison</b><span>Without a size chart, we won’t recommend a specific size.</span></div>}
++    <div className="page-title"><span className="eyebrow">Add a garment</span><h1>What are you considering?</h1><p>Add the garment's actual dimensions to compare with your scan.</p></div>
++    <form className="card import-form" onSubmit={e => {
++      e.preventDefault()
++      try {
++        const data = new FormData(e.currentTarget)
++        if (data.get('confirmed') !== 'on') throw new Error('Confirm these are garment dimensions, not suggested body measurements.')
++        const garment = {title: String(data.get('title')).trim(), sourceUrl: String(data.get('url') || ''), fabric: String(data.get('fabric')), sizes: parseChart(String(data.get('chart')))}
++        if (!garment.title) throw new Error('Enter a garment name.')
++        onGarment(garment); go('compare')
++      } catch (error) {setError(error instanceof Error ? error.message : 'Check the size chart.')}
++    }}>
++      <label className="full">Product URL (optional reference)<span className="input-icon"><Icon name="link" /><input name="url" type="url" placeholder="https://shop.com/product" /></span></label>
++      <p className="full demo-note">Automatic product fetching is not connected. Copy the garment chart from the listing below.</p>
++      <label>Garment name<input name="title" required placeholder="e.g. Linen wrap dress" /></label>
++      <label>Fabric / stretch notes<input name="fabric" placeholder="e.g. Non-stretch linen" /></label>
++      <label className="full">Garment size chart (circumferences in cm)<textarea name="chart" required rows={7} placeholder={'size,bust,waist,hip\nPaste actual garment dimensions here'} /></label>
++      <p className="full demo-note">Use one size per row, starting with size,bust,waist,hip. Omit unavailable columns. Double a flat width only when the seller specifies a flat half-circumference.</p>
++      <label className="check-row full"><input type="checkbox" name="confirmed" required /><span><b>These are garment dimensions in centimeters</b><small>Recommended body measurements cannot be used as garment dimensions.</small></span></label>
++      {error && <p className="full missing" role="alert">{error}</p>}
+       <Button type="submit" className="full">Compare fit <Icon name="arrow" /></Button>
+     </form>
+   </main>
+ }
+-
+-function Compare({ go }: { go: (s: Step) => void }) {
+-  const [size, setSize] = useState('20')
++function Compare({ go, profile, garment, selected, onSelect, onArea }: { go: (s: Step) => void; profile: BodyProfile | null; garment: Garment | null; selected: string; onSelect: (s: string) => void; onArea: (area:string) => void }) {
++  if (!profile || !garment) return <main className="page narrow"><h1>Add your profile and a garment first</h1><Button onClick={()=>go(profile?'import':'scan')}>Continue</Button></main>
++  const results = computeFit(profile.measurementsCm, garment)
++  const best = recommendation(results)
++  const current = results.find(r=>r.size===selected) ?? results[0]
+   return <main className="page compare-page">
+-    <div className="page-title split-title"><div><span className="eyebrow">Fit comparison · Demo mode</span><h1>How this dress may fit</h1></div><Button secondary onClick={() => go('import')}>Change garment</Button></div>
+-    <div className="size-tabs" role="tablist" aria-label="Garment size">{['16', '18', '20', '22', '24'].map(s => <button role="tab" aria-selected={size === s} onClick={() => setSize(s)} key={s}>Size {s}{s === '20' && <small>Best match</small>}</button>)}</div>
++    <div className="page-title split-title"><div><span className="eyebrow">Fit comparison</span><h1>{garment.title}</h1></div><Button secondary onClick={()=>go('import')}>Change garment</Button></div>
++    <div className="size-tabs" role="tablist" aria-label="Garment size">{results.map(r=><button key={r.size} role="tab" aria-selected={current.size===r.size} onClick={()=>onSelect(r.size)}>Size {r.size}{r.size===best?.size && <small>Suggested</small>}</button>)}</div>
+     <div className="compare-grid">
+-      <section className="card heatmap-card"><span className="demo-pill">Illustrative fit map</span><Silhouette heatmap /><div className="legend">{[['tight','Tight'],['snug','Snug'],['comfortable','Comfortable'],['loose','Loose']].map(([c,l]) => <span key={c}><i className={c}/>{l}</span>)}</div></section>
++      <section className="card heatmap-card"><span className="demo-pill">Profile-based estimate</span><Silhouette heatmap fit={current} onArea={a=>{onSelect(current.size);onArea(a);go('questions')}}/><div className="legend">{[['tight','Tight'],['snug','Snug'],['comfortable','Comfortable'],['loose','Loose'],['unknown','No data']].map(([c,l])=><span key={c}><i className={c}/>{l}</span>)}</div></section>
+       <section className="recommendation">
+-        <div className="rec-top"><span><Icon name="spark" /></span><div><small>Recommended size</small><h2>{size === '20' ? '20' : size}</h2></div><em>Demo mode</em></div>
+-        <h3>{size === '20' ? 'Balanced comfort with room to move' : `Viewing the sample fit for size ${size}`}</h3>
+-        <p>This illustrative recommendation uses sample data—not your scan. A real recommendation requires adapted in-browser pose estimation and a verified brand size chart.</p>
+-        <div className="fit-note"><b>Why this size?</b><span>Sample shaping allows more room through the waist while keeping the shoulders closer to the body.</span></div>
+-        <Button onClick={() => go('questions')}>Ask about this fit <Icon name="arrow" /></Button>
++        <div className="rec-top"><span><Icon name="spark"/></span><div><small>Suggested size</small><h2>{best?.size ?? 'No clear match'}</h2></div></div>
++        <h3>Viewing size {current.size}</h3>
++        <p>{best ? `Size ${best.size} avoids negative ease in measured zones and is closest to our basic comfort target on chart zones shared by all sizes.` : 'No size can be suggested without comparable chart data and room in the measured zones.'}</p>
++        <div className="fit-note">{current.zones.map(z=><span key={z.zone}><b>{z.zone}: </b>{z.easeCm===null ? 'Insufficient data' : `${z.status} · ${z.easeCm > 0 ? '+' : ''}${z.easeCm} cm ease`}</span>)}</div>
++        <p>Basic non-stretch heuristic: below 0 cm tight; 0–4 snug; 4–10 comfortable; above 10 loose. Stretch and cut are not modeled. Your scan remains an unvalidated estimate.</p>
++        <Button onClick={()=>{onSelect(current.size);go('questions')}}>Ask about this fit <Icon name="arrow"/></Button>
+       </section>
+     </div>
+   </main>
+ }
+-
+-function Questions({ go }: { go: (s: Step) => void }) {
+-  const [area, setArea] = useState('waist')
+-  const [question, setQuestion] = useState('')
++function Questions({ go, profile, garment, selected, initialArea }: { go: (s: Step) => void; profile: BodyProfile | null; garment: Garment | null; selected: string; initialArea: string }) {
++  const [area,setArea]=useState(initialArea)
++  const [question,setQuestion]=useState('')
++  const [answer,setAnswer]=useState('')
++  const fit=profile && garment ? computeFit(profile.measurementsCm,garment).find(r=>r.size===selected) ?? null : null
+   return <main className="page questions-page">
+-    <div className="page-title"><span className="eyebrow">Fit questions · Demo mode</span><h1>Where would you like more detail?</h1><p>Select an area on the body, then ask what matters to you.</p></div>
++    <div className="page-title"><span className="eyebrow">Fit questions</span><h1>Where would you like more detail?</h1><p>Choose an area for an explanation of the calculated fit.</p></div>
+     <div className="question-grid">
+-      <section className="card question-body"><Silhouette heatmap onArea={setArea} /><p>Tap a marker to choose a body area</p></section>
++      <section className="card question-body"><Silhouette heatmap fit={fit ?? undefined} onArea={a=>{setArea(a);setAnswer('')}}/><p>Tap a marker to choose a body area</p></section>
+       <section className="card ask-card">
+-        <span className="selected-area">Selected area <b>{area}</b></span>
+-        <h2>What would you like to know?</h2>
+-        <div className="suggestions">{[`Will this feel restrictive at my ${area}?`, `Will the fabric cling here?`, 'Could I sit comfortably?'].map(q => <button key={q} onClick={() => setQuestion(q)}>{q}<Icon name="chevron" /></button>)}</div>
+-        <label>Your question<textarea value={question} onChange={e => setQuestion(e.target.value)} placeholder="Ask about comfort, movement, or coverage…" /></label>
+-        <Button disabled={!question}>Get fit guidance <Icon name="arrow" /></Button>
+-        <p className="demo-note">Demo mode: answers require a verified garment model and browser-adapted scan data.</p>
+-        <button className="text-button" onClick={() => go('compare')}>Back to fit comparison</button>
++        <span className="selected-area">Selected area <b>{area}</b></span><h2>What would you like to know?</h2>
++        <div className="suggestions">{[`Will this feel restrictive at my ${area}?`,'Could I sit comfortably?','Could this gap at the back?'].map(q=><button key={q} onClick={()=>{setQuestion(q);setAnswer('')}}>{q}<Icon name="chevron"/></button>)}</div>
++        <label>Your question<textarea value={question} onChange={e=>{setQuestion(e.target.value);setAnswer('')}}/></label>
++        <Button disabled={!question.trim()} onClick={()=>setAnswer(answerFit(area,question,fit))}>Get fit guidance <Icon name="arrow"/></Button>
++        {answer && <p className="fit-answer" role="status">{answer}</p>}
++        <p className="demo-note">Calculated locally from the selected size. Claude is not connected; no profile or questions are uploaded.</p>
++        <button className="text-button" onClick={()=>go('compare')}>Back to comparison</button>
+       </section>
+     </div>
+   </main>
+ }
+ 
+ export default function App() {
+-  const [step, setStep] = useState<Step>('welcome')
+-  const go = (next: Step) => { setStep(next); window.scrollTo({ top: 0, behavior: 'smooth' }) }
+-  return <div className="app"><Header step={step} go={go} />{step === 'welcome' && <Welcome go={go} />}{step === 'scan' && <Scan go={go} />}{step === 'review' && <Review go={go} />}{step === 'import' && <ImportGarment go={go} />}{step === 'compare' && <Compare go={go} />}{step === 'questions' && <Questions go={go} />}<footer>Fit guidance, not a promise. Every body and garment is different.</footer></div>
++  const [step,setStep]=useState<Step>('welcome')
++  const [profile,setProfile]=useState<BodyProfile|null>(null)
++  const [garment,setGarment]=useState<Garment|null>(null)
++  const [selected,setSelected]=useState('')
++  const [area,setArea]=useState('waist')
++  const go=useCallback((next:Step)=>{setStep(next);window.scrollTo({top:0,behavior:'smooth'})},[])
++  const addGarment=(g:Garment)=>{setGarment(g);const best=profile?recommendation(computeFit(profile.measurementsCm,g)):null;setSelected(best?.size??g.sizes[0].label)}
++  return <div className="app"><Header step={step} go={go}/>
++    {step==='welcome' && <Welcome go={go}/>}
++    {step==='scan' && <Scan go={go} onProfile={setProfile}/>}
++    {step==='review' && <Review go={go} profile={profile} onDelete={()=>{setProfile(null);setGarment(null);setSelected('');go('welcome')}}/>}
++    {step==='import' && <ImportGarment go={go} onGarment={addGarment}/>}
++    {step==='compare' && <Compare go={go} profile={profile} garment={garment} selected={selected} onSelect={setSelected} onArea={setArea}/>}
++    {step==='questions' && <Questions go={go} profile={profile} garment={garment} selected={selected} initialArea={area}/>}
++    <footer>Fit guidance, not a promise. Every body and garment is different.</footer>
++  </div>
+ }
+diff --git a/figma-web/src/PythonScanner.tsx b/figma-web/src/PythonScanner.tsx
+new file mode 100644
+index 0000000..3e9559f
+--- /dev/null
++++ b/figma-web/src/PythonScanner.tsx
+@@ -0,0 +1,53 @@
++import { useEffect, useRef, useState } from 'react';
++import type { BodyProfile } from './bodyMeasurements';
++
++export function PythonScanner({heightCm, beforeStart, onProfile}:{heightCm:number;beforeStart:()=>void;onProfile:(profile:BodyProfile)=>void}) {
++  const [running,setRunning]=useState(false);
++  const [height,setHeight]=useState('');
++  const scanHeight=height ? Number(height) : heightCm;
++  const [message,setMessage]=useState('Use your original Python scanner on this computer instead.');
++  const timer=useRef<ReturnType<typeof setTimeout>|null>(null);
++  const token=useRef('');
++  const request=useRef(0);
++  const completeRef=useRef(onProfile); completeRef.current=onProfile;
++  useEffect(()=>()=>{request.current++;if(timer.current)clearTimeout(timer.current);if(token.current)void fetch('/api/scan/cancel',{method:'POST',headers:{'X-Fit-Session':token.current}}).catch(()=>{});},[]);
++  async function cancel(){
++    request.current++;
++    if(timer.current)clearTimeout(timer.current);
++    if(token.current)await fetch('/api/scan/cancel',{method:'POST',headers:{'X-Fit-Session':token.current}}).catch(()=>{});
++    setRunning(false);setMessage('Python scan cancelled.');
++  }
++  async function start(){
++    if(!(scanHeight>=100 && scanHeight<=250)){setMessage('Enter your height above (100–250 cm) first.');return;}
++    const current=++request.current;
++    setRunning(true);setMessage('Connecting to the local Python scanner...');
++    try{
++      const response=await fetch('/api/health');
++      if(!response.ok || !response.headers.get('content-type')?.includes('application/json'))throw new Error('Start the website with python run_fit.py to use this option. Browser scanning works independently.');
++      const health=await response.json();
++      if(current!==request.current)return;
++      token.current=health.sessionToken;
++      if(!health.pythonScannerAvailable)throw new Error('Install the Python scanner dependencies using backend/requirements.txt, then retry.');
++      beforeStart();
++      const result=await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json','X-Fit-Session':token.current},body:JSON.stringify({heightCm:scanHeight})});
++      const data=await result.json();
++      if(!result.ok)throw new Error(data.error||'Could not start Python.');
++      if(current!==request.current){void fetch('/api/scan/cancel',{method:'POST',headers:{'X-Fit-Session':token.current}});return;}
++      setMessage('A Python camera window will open. Follow its A-pose and full-turn instructions; return here when it finishes.');
++      async function poll(){
++        if(current!==request.current)return;
++        try{
++          const response=await fetch('/api/scan',{headers:{'X-Fit-Session':token.current}});
++          const state=await response.json();
++          if(current!==request.current)return;
++          if(!response.ok)throw new Error(state.error||'Could not read scanner status.');
++          if(state.status==='complete') {setRunning(false);completeRef.current(state.profile);return;}
++          if(state.status==='error' || state.status==='cancelled')throw new Error(state.error||'Scan cancelled.');
++          timer.current=setTimeout(poll,1000);
++        }catch(error){if(current===request.current){setRunning(false);setMessage(error instanceof Error?error.message:'Scanner connection lost.');}}
++      }
++      void poll();
++    }catch(error){if(current===request.current){setRunning(false);setMessage(error instanceof Error?error.message:'Could not start Python scanner.');}}
++  }
++  return <div className="python-option"><b>Original Python scanner</b><label>Height for Python scan (cm)<input type="number" min="100" max="250" value={height || (heightCm ? String(heightCm) : '')} onChange={e=>setHeight(e.target.value)} disabled={running} /></label><p role="status">{message}</p><button className="btn btn-secondary" disabled={running} onClick={start}>Use Python scanner</button>{running && <button className="text-button" onClick={cancel}>Cancel Python scan</button>}</div>;
++}
+diff --git a/figma-web/src/bodyMeasurements.ts b/figma-web/src/bodyMeasurements.ts
+new file mode 100644
+index 0000000..06134eb
+--- /dev/null
++++ b/figma-web/src/bodyMeasurements.ts
+@@ -0,0 +1,161 @@
++export type Point = { x: number; y: number; z?: number; visibility?: number };
++export type Zone = 'bust' | 'waist' | 'hip' | 'thigh' | 'shoulder' | 'inseam';
++export interface BodyProfile {
++  heightCm: number;
++  measurementsCm: Partial<Record<Zone, number>>;
++  confidence: Partial<Record<Zone, 'low'>>;
++  scannedAt: string;
++  source: 'webcam' | 'manual' | 'python';
++  notes: string[];
++}
++export type Sample = Record<string, number | null>;
++export type Mask = { data: Uint8Array; width: number; height: number; top: number; bottom: number };
++const mid = (a: Point, b: Point): Point => ({ x: (a.x+b.x)/2, y: (a.y+b.y)/2 });
++const distance = (a: Point, b: Point) => Math.hypot(a.x-b.x, a.y-b.y);
++export function median(values: number[]): number {
++  const a = [...values].sort((a,b) => a-b);
++  const i = Math.floor(a.length/2);
++  return a.length % 2 ? a[i] : (a[i-1]+a[i])/2;
++}
++export function combine(samples: Sample[]): Sample {
++  const out: Sample = {};
++  for (const key of Object.keys(samples[0])) {
++    const values = samples.map(s => s[key]).filter((v): v is number => v !== null && Number.isFinite(v));
++    out[key] = values.length ? median(values) : null;
++  }
++  return out;
++}
++// Resample the model mask into camera aspect ratio before measuring widths.
++export function personMask(raw: Float32Array, mw: number, mh: number, vw: number, vh: number): Mask | null {
++  const height = Math.min(480, vh);
++  const width = Math.round(height * vw / vh);
++  const binary = new Uint8Array(width*height);
++  for (let y=0; y<height; y++) for (let x=0; x<width; x++) {
++    binary[y*width+x] = raw[Math.min(mh-1, Math.floor(y*mh/height))*mw + Math.min(mw-1, Math.floor(x*mw/width))] > 0.5 ? 1 : 0;
++  }
++  const queue = new Int32Array(binary.length);
++  let best: Int32Array | null = null;
++  for (let seed=0; seed<binary.length; seed++) {
++    if (!binary[seed]) continue;
++    let head=0, tail=1;
++    queue[0]=seed; binary[seed]=0;
++    while (head<tail) {
++      const i=queue[head++], x=i%width;
++      const neighbors = [x>0 ? i-1 : -1, x<width-1 ? i+1 : -1, i>=width ? i-width : -1, i<binary.length-width ? i+width : -1];
++      for (const n of neighbors) if (n>=0 && binary[n]) { binary[n]=0; queue[tail++]=n; }
++    }
++    if (!best || tail>best.length) best=queue.slice(0,tail);
++  }
++  if (!best || best.length < width*height*0.015) return null;
++  const data = new Uint8Array(binary.length);
++  let top=height, bottom=0;
++  for (const i of best) { data[i]=1; const y=Math.floor(i/width); top=Math.min(top,y); bottom=Math.max(bottom,y); }
++  return { data, width, height, top, bottom };
++}
++const inside = (m: Mask, x: number, y: number) => {
++  x=Math.floor(x); y=Math.floor(y);
++  return x>=0 && x<m.width && y>=0 && y<m.height && m.data[y*m.width+x]===1;
++};
++function rowWidth(m: Mask, y: number, x: number): number | null {
++  y=Math.floor(y); x=Math.floor(x);
++  if (!inside(m,x,y)) return null;
++  let l=x, r=x;
++  while (inside(m,l-1,y)) l--;
++  while (inside(m,r+1,y)) r++;
++  return r-l+1;
++}
++function band(m: Mask, y: number, x: number): number | null {
++  const values=[-2,-1,0,1,2].map(d=>rowWidth(m,y+d,x)).filter((v): v is number=>v!==null);
++  return values.length ? median(values) : null;
++}
++function perpendicular(m: Mask, a: Point, b: Point, t: number): number | null {
++  const length=distance(a,b);
++  if (length<1) return null;
++  const nx=-(b.y-a.y)/length, ny=(b.x-a.x)/length;
++  const cx=a.x+t*(b.x-a.x), cy=a.y+t*(b.y-a.y);
++  if (!inside(m,cx,cy)) return null;
++  function walk(sign: number) {
++    for (let s=1;s<Math.max(m.width,m.height);s++) if (!inside(m,cx+sign*s*nx,cy+sign*s*ny)) return s;
++    return Math.max(m.width,m.height);
++  }
++  return walk(1)+walk(-1)-1;
++}
++function torso(p: Point[]) {
++  const shoulder=mid(p[11],p[12]), hip=mid(p[23],p[24]);
++  const length=hip.y-shoulder.y;
++  return { shoulder, hip, length, y: (f:number)=>shoulder.y+f*length, x: (f:number)=>shoulder.x+Math.min(f,1)*(hip.x-shoulder.x) };
++}
++export function pixelPoints(points: Point[], m: Mask): Point[] { return points.map(p=>({...p,x:p.x*m.width,y:p.y*m.height})); }
++export function pitchCorrection(world: Point[]): number {
++  if (world.length<29) return 1;
++  const sy=(world[11].y+world[12].y)/2, sz=((world[11].z??0)+(world[12].z??0))/2;
++  const ay=(world[27].y+world[28].y)/2, az=((world[27].z??0)+(world[28].z??0))/2;
++  const pitch=Math.min(Math.atan2(Math.abs(sz-az),Math.abs(sy-ay)),35*Math.PI/180);
++  return 1/Math.cos(pitch);
++}
++export function framing(points: Point[], m: Mask, view: 'front'|'side'): string | null {
++  if (m.top<3 || m.bottom>=m.height-3) return 'Bring your entire head and feet inside the frame.';
++  if (m.bottom-m.top<m.height*0.55) return 'Come slightly closer while keeping head and feet visible.';
++  const required=view==='front' ? [0,11,12,13,14,15,16,23,24,25,26,27,28] : [0];
++  if (required.some(i=>(points[i].visibility??0)<0.6 || points[i].x<0.02 || points[i].x>0.98 || points[i].y<0.02 || points[i].y>0.98)) return 'Keep your head, hands and feet clearly visible.';
++  if (view==='side' && (Math.max(points[23].visibility??0,points[24].visibility??0)<0.5 || Math.max(points[27].visibility??0,points[28].visibility??0)<0.5)) return 'Keep your hip and feet visible in the side view.';
++  const p=pixelPoints(points,m), t=torso(p), sw=distance(p[11],p[12]);
++  if (t.length<30) return 'Stand upright and move into view.';
++  if (view==='side') return sw/distance(t.shoulder,t.hip)>0.35 ? 'Turn 90 degrees to your side, with arms down.' : null;
++  if (sw<20) return 'Face the camera squarely.';
++  for (const [w,h] of [[15,23],[16,24]]) {
++    if (Math.abs(p[w].x-p[h].x)<0.6*sw) return 'Move your arms away from your torso, diagonally DOWN in an A-pose.';
++    if (p[w].y<t.shoulder.y+0.3*t.length) return 'Lower your arms to about 45 degrees below your shoulders.';
++  }
++  if (Math.abs(p[27].x-p[28].x)<0.3*sw) return 'Separate your feet to about shoulder width.';
++  return null;
++}
++// Port of test.py front sampling: silhouette widths normalized to shoulder width.
++export function measureFront(p: Point[], m: Mask, vc: number): Sample | null {
++  const t=torso(p), sw=distance(p[11],p[12]);
++  if (sw<20 || t.length<30) return null;
++  const chest=band(m,t.y(0.33),t.x(0.33));
++  const shoulder=band(m,t.y(-0.03),t.x(-0.03));
++  let waist: [number,number] | null=null, hip: [number,number] | null=null;
++  for (let f=0.5;f<0.9;f+=0.02) { const w=band(m,t.y(f),t.x(f)); if (w && (!waist || w<waist[0])) waist=[w,f]; }
++  const knee=(p[25].y+p[26].y)/2, ankle=(p[27].y+p[28].y)/2;
++  for (let f=0.85;f<1+0.35*(knee-t.hip.y)/t.length;f+=0.02) { const w=band(m,t.y(f),t.x(f)); if (w && (!hip || w>hip[0])) hip=[w,f]; }
++  if (!chest || !waist || !hip || !shoulder || chest>1.3*sw || waist[0]>1.3*sw || hip[0]>1.6*sw) return null;
++  let crotch: number | null=null;
++  const start=Math.floor((knee+ankle)/2);
++  if (!inside(m,t.hip.x,start)) for (let y=start;y>t.hip.y-0.3*t.length;y--) if (inside(m,t.hip.x,y)) { crotch=y; break; }
++  const thighs=[perpendicular(m,p[23],p[25],0.2),perpendicular(m,p[24],p[26],0.2)].filter((v):v is number=>v!==null && v<0.6*hip![0]);
++  return { stature:(m.bottom-m.top+1)*vc/sw, shoulder:shoulder/sw, chest:chest/sw, waist:waist[0]/sw, hip:hip[0]/sw, waistF:waist[1], hipF:hip[1], thigh:thighs.length?median(thighs)/sw:null, inseam:crotch!==null?(m.bottom-crotch)*vc/sw:null };
++}
++export function measureSide(p: Point[], m: Mask, front: Sample, vc: number): Sample | null {
++  const t=torso(p), stature=(m.bottom-m.top+1)*vc;
++  if (t.length<30 || !front.waistF || !front.hipF) return null;
++  function scan(from: number,to: number,max: boolean) {
++    const values: number[]=[];
++    for (let f=from;f<to;f+=0.02) { const w=band(m,t.y(f),t.x(f)); if (w) values.push(w); }
++    return values.length ? (max?Math.max(...values):Math.min(...values))/stature : null;
++  }
++  const bust=scan(0.15,0.55,true), waist=scan(front.waistF-0.08,front.waistF+0.08,false), hip=scan(front.hipF-0.1,front.hipF+0.15,true);
++  return bust && waist && hip ? { bust,waist,hip } : null;
++}
++export function ellipsePerimeter(width: number, depth: number): number {
++  const a=width/2,b=depth/2;
++  return Math.PI*(3*(a+b)-Math.sqrt((3*a+b)*(a+3*b)));
++}
++export function makeProfile(front: Sample, side: Sample, heightCm: number): BodyProfile {
++  if (!(heightCm>=100 && heightCm<=250) || !front.stature) throw new Error('A valid height and front scan are required.');
++  const scale=heightCm/front.stature;
++  const measurementsCm: BodyProfile['measurementsCm']={};
++  for (const [zone,key] of [['bust','chest'],['waist','waist'],['hip','hip']] as const) {
++    if (!front[key] || !side[zone]) throw new Error('Both front and side measurements are required.');
++    measurementsCm[zone]=ellipsePerimeter(front[key]*scale,side[zone]*heightCm);
++  }
++  if (front.shoulder) measurementsCm.shoulder=front.shoulder*scale;
++  if (front.inseam) measurementsCm.inseam=front.inseam*scale;
++  if (front.thigh) measurementsCm.thigh=ellipsePerimeter(front.thigh*scale,front.thigh*scale*0.95);
++  for (const [key,value] of Object.entries(measurementsCm)) {
++    if (!Number.isFinite(value) || value<=0 || value>400) throw new Error(`Invalid ${key} estimate. Please rescan.`);
++    measurementsCm[key as Zone]=Math.round(value*10)/10;
++  }
++  return { heightCm,measurementsCm,confidence:Object.fromEntries(Object.keys(measurementsCm).map(k=>[k,'low'])),scannedAt:new Date().toISOString(),source:'webcam',notes:['Experimental estimates; not yet validated against a tape measure.','Height is user-entered calibration; bust, waist and hip use front widths, side depths and an elliptical approximation.','Thigh uses an assumed depth ratio of 0.95. Inseam may be unavailable.','Loose clothing, posture, camera tilt, lighting and segmentation errors affect results.'] };
++}
+diff --git a/figma-web/src/fitEngine.ts b/figma-web/src/fitEngine.ts
+new file mode 100644
+index 0000000..0303752
+--- /dev/null
++++ b/figma-web/src/fitEngine.ts
+@@ -0,0 +1,55 @@
++export type FitZone = 'bust'|'waist'|'hip';
++export type FitStatus = 'tight'|'snug'|'comfortable'|'loose'|'unknown';
++export interface Garment {title:string;sourceUrl:string;fabric:string;sizes:{label:string;measurementsCm:Partial<Record<FitZone,number>>}[]}
++export interface ZoneFit {zone:FitZone;easeCm:number|null;status:FitStatus}
++export interface SizeFit {size:string;zones:ZoneFit[];score:number|null}
++export function parseChart(text:string):Garment['sizes'] {
++  const lines=text.trim().split(/\r?\n/).filter(s=>s.trim());
++  if(lines.length<2 || lines.length>31)throw new Error('Add a header and 1–30 size rows.');
++  const header=lines[0].toLowerCase().split(',').map(s=>s.trim());
++  if(header[0]!=='size' || header.some((s,i)=>i>0 && !['bust','waist','hip'].includes(s)) || new Set(header).size!==header.length || header.length<2)throw new Error('Use CSV headers: size,bust,waist,hip. You may omit unavailable zones.');
++  const labels=new Set<string>();
++  return lines.slice(1).map(line=>{
++    const cells=line.split(',').map(s=>s.trim());
++    if(cells.length!==header.length || !cells[0] || cells[0].length>20 || labels.has(cells[0]))throw new Error('Each row needs a unique size and matching columns.');
++    labels.add(cells[0]);
++    const measurementsCm:Garment['sizes'][number]['measurementsCm']={};
++    for(let i=1;i<header.length;i++){
++      if(!cells[i])continue;
++      const value=Number(cells[i]);
++      if(!Number.isFinite(value)||value<10||value>400)throw new Error('Chart values must be garment circumferences in cm, between 10 and 400.');
++      measurementsCm[header[i] as FitZone]=value;
++    }
++    if(!Object.keys(measurementsCm).length)throw new Error('Each size needs at least one garment measurement.');
++    return {label:cells[0],measurementsCm};
++  });
++}
++export function computeFit(body:Partial<Record<FitZone,number>>,garment:Garment):SizeFit[]{
++  // Basic non-stretch heuristic, not cloth simulation. Missing data never earns a score.
++  const results=garment.sizes.map(size=>{
++    const zones:ZoneFit[]=(['bust','waist','hip'] as const).map(zone=>{
++      const b=body[zone],g=size.measurementsCm[zone];
++      if(b==null || g==null)return {zone,easeCm:null,status:'unknown'};
++      const easeCm=Math.round((g-b)*10)/10;
++      const status:FitStatus=easeCm<0?'tight':easeCm<4?'snug':easeCm<=10?'comfortable':'loose';
++      return {zone,easeCm,status};
++    });
++    return {size:size.label,zones,score:null as number|null};
++  });
++  // Rank on a common set of zones so incomplete charts cannot win by omission.
++  const common=(['bust','waist','hip'] as const).filter(z=>body[z]!=null && garment.sizes.every(s=>s.measurementsCm[z]!=null));
++  for(const r of results)if(common.length)r.score=-r.zones.filter(z=>common.includes(z.zone)).reduce((sum,z)=>sum+Math.abs(z.easeCm!-6)+(z.easeCm!<0?30:0),0);
++  return results;
++}
++export function recommendation(results:SizeFit[]):SizeFit|null{
++  const eligible=results.filter(r=>r.score!==null && !r.zones.some(z=>z.status==='tight'));
++  return eligible.sort((a,b)=>b.score!-a.score!)[0]??null;
++}
++export function answerFit(area:string,question:string,result:SizeFit|null):string {
++  if(!question.trim())return 'Enter a question first.';
++  const zone=area==='hips'?'hip':area;
++  const fit=result?.zones.find(z=>z.zone===zone);
++  if(!fit || fit.easeCm===null)return 'There is not enough measurement data for this area. Add a garment chart or retry the scan.';
++  const base=`For size ${result!.size}, the ${area} area has ${fit.easeCm} cm of ease (garment minus body), suggesting a ${fit.status} fit under our basic non-stretch rule.`;
++  return /gap|back|cling|sit|move|stretch|fabric/i.test(question)?base+' This does not establish back gaping, movement or fabric behavior; those need cut, stretch and more detailed shape information.':base+' Scan error and garment construction may change how it feels. This is a calculated explanation, not an AI answer.';
++}
+diff --git a/figma-web/src/index.css b/figma-web/src/index.css
+index a731dbe..a5231fc 100644
+--- a/figma-web/src/index.css
++++ b/figma-web/src/index.css
+@@ -274,3 +274,17 @@ footer { text-align: center; padding: 22px 18px; color: #657b78; font-size: 13px
+ @media (prefers-reduced-motion: reduce) {
+   *, *:before, *:after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+ }
++
++/* Append these rules to the END of your existing src/index.css. */
++.camera-view video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
++.measurement-canvas { position: absolute; inset: 0; width: 100%; height: 100%; transform: scaleX(-1); pointer-events: none; }
++.capture-bar { flex-wrap: wrap; padding: 12px; }
++.measurements ul { font-size: 12px; line-height: 1.5; color: #607572; padding-left: 18px; }
++.zone-comfortable { fill: #8fc3a8; }
++.zone-unknown { fill: #c6cfcb; }
++.legend .unknown { background: #c6cfcb; }
++.python-option { margin: 18px 0; padding: 14px; border: 1px solid #cbd6d2; border-radius: 12px; }
++.python-option p { font-size: 12px; line-height: 1.5; color: #607572; }
++.python-option label { margin-top: 12px; }
++.python-option .btn { min-height: 42px; font-size: 12px; padding: 0 14px; }
++.fit-answer { background: #edf3ef; padding: 16px; border-radius: 12px; font-size: 14px; line-height: 1.6; }
+diff --git a/figma-web/src/useBodyScanner.ts b/figma-web/src/useBodyScanner.ts
+new file mode 100644
+index 0000000..78977b9
+--- /dev/null
++++ b/figma-web/src/useBodyScanner.ts
+@@ -0,0 +1,127 @@
++import { useEffect, useRef, useState } from 'react';
++import type { RefObject } from 'react';
++import type { PoseLandmarker } from '@mediapipe/tasks-vision';
++import { combine, framing, makeProfile, measureFront, measureSide, personMask, pitchCorrection, pixelPoints } from './bodyMeasurements';
++import type { BodyProfile, Sample } from './bodyMeasurements';
++
++type View = 'front' | 'side';
++type Capture = { view: View; samples: Sample[]; holdAt: number; collectAt: number; lastGood: number; anchor: number[] | null };
++export function useBodyScanner(enabled: boolean, videoRef: RefObject<HTMLVideoElement | null>, canvasRef: RefObject<HTMLCanvasElement | null>, heightCm: number) {
++  const [message, setMessage] = useState('Enable your camera to begin.');
++  const [ready, setReady] = useState(false);
++  const [capturing, setCapturing] = useState(false);
++  const [progress, setProgress] = useState(0);
++  const [frontDone, setFrontDone] = useState(false);
++  const [profile, setProfile] = useState<BodyProfile | null>(null);
++  const heightRef=useRef(heightCm); heightRef.current=heightCm;
++  const frontRef=useRef<Sample | null>(null);
++  const captureRef=useRef<Capture | null>(null);
++  const mounted=useRef(true);
++  useEffect(()=>{ mounted.current=true; return ()=>{mounted.current=false;}; },[]);
++
++  function reset() {
++    captureRef.current=null; frontRef.current=null;
++    setCapturing(false); setFrontDone(false); setProgress(0); setProfile(null);
++  }
++  function capture(view: View) {
++    if (!ready) return;
++    if (!Number.isFinite(heightRef.current) || heightRef.current<100 || heightRef.current>250) { setMessage('Enter your height between 100 and 250 cm.'); return; }
++    if (view==='side' && !frontRef.current) { setMessage('Capture the front view first.'); return; }
++    if (view==='front') { frontRef.current=null; setFrontDone(false); setProfile(null); }
++    captureRef.current={view,samples:[],holdAt:0,collectAt:0,lastGood:0,anchor:null};
++    setCapturing(true); setProgress(0); setMessage('Move into position, then hold still.');
++  }
++
++  useEffect(()=>{
++    if (!enabled) { setReady(false); captureRef.current=null; setCapturing(false); return; }
++    let cancelled=false, frame=0, model: PoseLandmarker | null=null;
++    let lastVideo=-1, lastRun=-1;
++    const reportFailure=(text:string, now:number)=>{
++      setMessage(text);
++      const c=captureRef.current;
++      if (c) {
++        c.holdAt=0;
++        if (!c.lastGood || now-c.lastGood>500) { c.samples=[]; c.collectAt=0; c.anchor=null; setProgress(0); }
++      }
++    };
++    async function initialize() {
++      try {
++        setReady(false); setMessage('Loading MediaPipe body scanner...');
++        const {FilesetResolver,PoseLandmarker,DrawingUtils}=await import('@mediapipe/tasks-vision');
++        const files=await FilesetResolver.forVisionTasks(`${import.meta.env.BASE_URL}wasm`);
++        if(cancelled) return;
++        const created=await PoseLandmarker.createFromOptions(files,{
++          baseOptions:{modelAssetPath:`${import.meta.env.BASE_URL}models/pose_landmarker.task`},
++          runningMode:'VIDEO',numPoses:1,outputSegmentationMasks:true,
++          minPoseDetectionConfidence:0.6,minPosePresenceConfidence:0.6,minTrackingConfidence:0.6,
++        });
++        if(cancelled){created.close();return;}
++        model=created; setReady(true); setMessage('Scanner ready. Enter height, then follow the guide.');
++        function detect() {
++          if(cancelled) return;
++          try {
++            const video=videoRef.current,canvas=canvasRef.current,ctx=canvas?.getContext('2d'),now=performance.now();
++            if(video && canvas && ctx && video.readyState>=2 && video.currentTime!==lastVideo && now-lastRun>=100){
++              lastVideo=video.currentTime;lastRun=now;
++              if(canvas.width!==video.videoWidth || canvas.height!==video.videoHeight){canvas.width=video.videoWidth;canvas.height=video.videoHeight;}
++              ctx.clearRect(0,0,canvas.width,canvas.height);
++              created.detectForVideo(video,now,result=>{
++                const points=result.landmarks[0];
++                if(!points){reportFailure('No body detected. Adjust lighting and framing.',now);return;}
++                const drawing=new DrawingUtils(ctx);
++                drawing.drawConnectors(points,PoseLandmarker.POSE_CONNECTIONS,{color:'#2dd4bf',lineWidth:3});
++                drawing.drawLandmarks(points,{color:'white',fillColor:'#0f766e',radius:3});
++                const c=captureRef.current;
++                if(!c){setMessage(frontRef.current?'Front captured. Turn sideways for the side scan.':'Body detected. Follow the guide and capture your front view.');return;}
++                const raw=result.segmentationMasks?.[0];
++                if(!raw){reportFailure('Person silhouette is unavailable. Restart the camera.',now);return;}
++                const mask=personMask(raw.getAsFloat32Array(),raw.width,raw.height,video.videoWidth,video.videoHeight);
++                if(!mask){reportFailure('Unable to isolate your silhouette. Try a plain background.',now);return;}
++                const issue=framing(points,mask,c.view);
++                if(issue){reportFailure(issue,now);return;}
++                const p=pixelPoints(points,mask), vc=pitchCorrection(result.worldLandmarks[0]??[]);
++                const sample=c.view==='front'?measureFront(p,mask,vc):measureSide(p,mask,frontRef.current!,vc);
++                if(!sample){reportFailure('Silhouette unclear. Separate your arms from your torso and improve lighting.',now);return;}
++                const anchor=[(points[23].x+points[24].x)/2,(points[23].y+points[24].y)/2,(mask.bottom-mask.top)/mask.height];
++                const moved=c.anchor && anchor.some((v,i)=>Math.abs(v-c.anchor![i])>0.025);
++                if(moved){c.samples=[];c.holdAt=0;c.collectAt=0;c.anchor=null;setProgress(0);}
++                c.anchor=c.anchor??anchor;
++                // Reject outlier widths/depths instead of smoothing bad measurements into results.
++                if(c.samples.length>=5){
++                  const center=combine(c.samples);
++                  const keys=c.view==='front'?['chest','waist','hip','stature']:['bust','waist','hip'];
++                  if(keys.some(k=>sample[k] && center[k] && Math.abs(sample[k]!/center[k]!-1)>0.08)){
++                    reportFailure('Measurements are unstable. Hold still and check lighting.',now);return;
++                  }
++                }
++                c.lastGood=now;
++                if(!c.holdAt)c.holdAt=now;
++                if(now-c.holdAt<2000){setMessage('Position looks good. Hold still for two seconds...');return;}
++                if(!c.collectAt)c.collectAt=now;
++                c.samples.push(sample);
++                const target=c.view==='front'?45:30;
++                setProgress(Math.min(99,Math.round(100*Math.min(c.samples.length/target,(now-c.collectAt)/3000))));
++                setMessage(`Capturing ${c.view} silhouette. Keep still...`);
++                if(c.samples.length>=target && now-c.collectAt>=3000){
++                  const final=combine(c.samples);
++                  captureRef.current=null;setCapturing(false);setProgress(100);
++                  if(c.view==='front'){frontRef.current=final;setFrontDone(true);setMessage('Front captured. Continue to the side view.');}
++                  else {setProfile(makeProfile(frontRef.current!,final,heightRef.current));setMessage('Front and side captured. Estimates are ready for review.');}
++                }
++              });
++            }
++            frame=requestAnimationFrame(detect);
++          }catch(error){
++            captureRef.current=null;setCapturing(false);setReady(false);
++            model?.close();model=null;
++            setMessage(`Scan stopped: ${error instanceof Error?error.message:'Unknown error'}. Stop and restart the camera.`);
++          }
++        }
++        frame=requestAnimationFrame(detect);
++      }catch(error){if(!cancelled)setMessage(`Scanner could not load: ${error instanceof Error?error.message:'Unknown error'}. Check your connection, then restart the camera.`);}
++    }
++    void initialize();
++    return ()=>{cancelled=true;cancelAnimationFrame(frame);model?.close();captureRef.current=null;if(mounted.current)setCapturing(false);};
++  },[enabled,videoRef,canvasRef]);
++  return {message,ready,capturing,progress,frontDone,profile,capture,reset};
++}
+diff --git a/figma-web/tests/fit.test.cjs b/figma-web/tests/fit.test.cjs
+new file mode 100644
+index 0000000..1529021
+--- /dev/null
++++ b/figma-web/tests/fit.test.cjs
+@@ -0,0 +1,39 @@
++const test=require('node:test');
++const assert=require('node:assert/strict');
++const fs=require('node:fs');
++const path=require('node:path');
++const ts=require('typescript');
++function load(name){const m={exports:{}};const code=ts.transpileModule(fs.readFileSync(path.join(__dirname,'../src',name),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;new Function('exports','module',code)(m.exports,m);return m.exports;}
++const body=load('bodyMeasurements.ts');
++const fit=load('fitEngine.ts');
++test('mask preserves camera aspect and chooses largest connected person',()=>{
++ const raw=new Float32Array(10000);for(let y=5;y<95;y++)for(let x=35;x<65;x++)raw[y*100+x]=1;raw[0]=1;
++ const m=body.personMask(raw,100,100,200,100);assert.equal(m.width,200);assert.equal(m.height,100);assert.equal(m.top,5);assert.equal(m.bottom,94);assert.equal(m.data[0],0);
++ assert.equal(body.personMask(new Float32Array(10000),100,100,100,100),null);
++});
++test('front and side calibration produces ellipse circumferences, not joint distances',()=>{
++ const front={stature:4,shoulder:1.1,chest:1,waist:.8,hip:1.2,waistF:.7,hipF:1.05,thigh:.4,inseam:1.8};
++ const p=body.makeProfile(front,{bust:.15,waist:.12,hip:.16},160);
++ assert.equal(p.measurementsCm.shoulder,44);assert.equal(p.measurementsCm.inseam,72);
++ assert.equal(p.measurementsCm.bust,Math.round(body.ellipsePerimeter(40,24)*10)/10);
++ assert.equal(p.confidence.thigh,'low');assert.throws(()=>body.makeProfile(front,{},160));assert.throws(()=>body.makeProfile(front,{bust:.15,waist:.12,hip:.16},0));
++ assert.ok(Math.abs(body.ellipsePerimeter(20,20)-20*Math.PI)<1e-9);
++});
++test('off-frame landmarks are rejected even with high visibility',()=>{
++ const points=Array.from({length:33},()=>({x:.5,y:.5,visibility:1}));points[0].x=-.1;
++ assert.match(body.framing(points,{height:100,width:100,top:5,bottom:94,data:new Uint8Array(10000)},'front'),/visible/);
++});
++test('chart parser rejects duplicate labels, malformed headers and nonnumeric values',()=>{
++ for(const chart of ['size,bust\nM,100\nM,120','size,weight\nM,100','size,bust\nM,NaN','size,bust\nM,-5','size,bust\nM,'])assert.throws(()=>fit.parseChart(chart));
++ assert.equal(fit.parseChart('size,bust,waist,hip\nM,106,86,110').length,1);
++});
++test('recommendation and colors change with actual selected size',()=>{
++ const garment={title:'Test',fabric:'',sourceUrl:'',sizes:fit.parseChart('size,bust,waist,hip\nS,95,75,100\nM,106,86,110\nL,120,100,124')};
++ const results=fit.computeFit({bust:100,waist:80,hip:104},garment);
++ assert.equal(results[0].zones[0].status,'tight');assert.equal(results[1].zones[0].status,'comfortable');assert.equal(results[2].zones[0].status,'loose');assert.equal(fit.recommendation(results).size,'M');
++ assert.match(fit.answerFit('waist','Could I sit?',results[1]),/6 cm/);assert.match(fit.answerFit('waist','Could I sit?',results[1]),/does not establish/);
++});
++test('missing charts cannot produce a recommendation and missing zones stay unknown',()=>{
++ const garment={title:'Test',fabric:'',sourceUrl:'',sizes:[{label:'S',measurementsCm:{waist:86}},{label:'M',measurementsCm:{bust:106}}]};
++ const results=fit.computeFit({bust:100,waist:80},garment);assert.equal(fit.recommendation(results),null);assert.equal(results[0].zones[0].status,'unknown');
++});
+diff --git a/run_fit.py b/run_fit.py
+new file mode 100644
+index 0000000..c3ca226
+--- /dev/null
++++ b/run_fit.py
+@@ -0,0 +1,123 @@
++"""Serve Fit and connect its UI to the local Python webcam scanner.
++Run from the repository root: python run_fit.py
++"""
++from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
++from pathlib import Path
++from urllib.parse import urlsplit
++import argparse
++import importlib.util
++import json
++import secrets
++import subprocess
++import sys
++import tempfile
++import threading
++import time
++
++ROOT=Path(__file__).resolve().parent
++DIST=ROOT/'figma-web'/'dist'
++LOCK=threading.Lock()
++TOKEN=secrets.token_urlsafe(24)
++JOB={'status':'idle'}
++PROCESS=None
++
++def dependencies_available():
++    return all(importlib.util.find_spec(name) is not None for name in ('cv2','mediapipe','numpy'))
++
++def scan_worker(height):
++    global JOB,PROCESS
++    with tempfile.TemporaryDirectory(prefix='fit-scan-') as directory:
++        output=Path(directory)/'profile.json'
++        log=Path(directory)/'scanner.log'
++        try:
++            with log.open('w',encoding='utf-8') as stream:
++                flags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0
++                with LOCK:
++                    if JOB.get('status')!='running': return
++                    PROCESS=subprocess.Popen([sys.executable,str(ROOT/'backend'/'scanner_runner.py'),str(output),str(height)],cwd=ROOT,stdout=stream,stderr=stream,creationflags=flags)
++                    process=PROCESS
++                try:
++                    code=process.wait(timeout=300)
++                except subprocess.TimeoutExpired:
++                    process.kill();process.wait()
++                    raise RuntimeError('Scan timed out after five minutes. Restart and follow the on-screen instructions.')
++            with LOCK:
++                if JOB.get('status')=='cancelled': return
++                if code != 0 or not output.exists():
++                    raise RuntimeError('Python scan did not complete. Check camera access, close other camera apps and retry. The Python window must finish both capture steps.')
++                profile=json.loads(output.read_text(encoding='utf-8'))
++                JOB={'status':'complete','profile':profile}
++        except Exception as exc:
++            with LOCK:
++                if JOB.get('status')!='cancelled': JOB={'status':'error','error':str(exc)}
++        finally:
++            with LOCK: PROCESS=None
++
++class Handler(SimpleHTTPRequestHandler):
++    def __init__(self,*args,**kwargs):
++        super().__init__(*args,directory=str(DIST),**kwargs)
++    def end_headers(self):
++        self.send_header('Cache-Control','no-store')
++        self.send_header('X-Content-Type-Options','nosniff')
++        super().end_headers()
++    def json_response(self,data,status=200):
++        encoded=json.dumps(data,allow_nan=False).encode()
++        self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(encoded)));self.end_headers();self.wfile.write(encoded)
++    def trusted_host(self):
++        return self.headers.get('Host','').lower() in {f'localhost:{self.server.server_port}',f'127.0.0.1:{self.server.server_port}'}
++    def do_GET(self):
++        if not self.trusted_host(): self.json_response({'error':'Use the localhost address printed in the terminal.'},403);return
++        path=urlsplit(self.path).path
++        if path=='/api/health':
++            self.json_response({'ok':True,'pythonScannerAvailable':dependencies_available(),'sessionToken':TOKEN});return
++        if path=='/api/scan':
++            if not secrets.compare_digest(self.headers.get('X-Fit-Session',''),TOKEN): self.json_response({'error':'Invalid session.'},403);return
++            with LOCK: snapshot=dict(JOB)
++            self.json_response(snapshot);return
++        if path.startswith('/api/'):
++            self.json_response({'error':'Not found.'},404);return
++        if path=='/': self.path='/index.html'
++        super().do_GET()
++    def do_POST(self):
++        global JOB,PROCESS
++        origin=self.headers.get('Origin')
++        allowed={f'http://localhost:{self.server.server_port}',f'http://127.0.0.1:{self.server.server_port}'}
++        if not self.trusted_host() or (origin and origin not in allowed) or not secrets.compare_digest(self.headers.get('X-Fit-Session',''),TOKEN):
++            self.json_response({'error':'Open Fit on this computer using its localhost address.'},403);return
++        try:
++            length=int(self.headers.get('Content-Length','0'))
++            if length<0 or length>2048: raise ValueError('Request too large.')
++            data=json.loads(self.rfile.read(length) or b'{}')
++            if not isinstance(data,dict): raise ValueError('Expected an object.')
++        except (ValueError,TypeError): self.json_response({'error':'Invalid request.'},400);return
++        path=urlsplit(self.path).path
++        if path=='/api/scan/cancel':
++            with LOCK:
++                if PROCESS is not None: PROCESS.terminate()
++                JOB={'status':'cancelled'}
++            self.json_response({'status':'cancelled'});return
++        if path!='/api/scan': self.json_response({'error':'Not found.'},404);return
++        try: height=float(data.get('heightCm',0))
++        except (ValueError,TypeError): height=0
++        if not 100<=height<=250: self.json_response({'error':'Height must be 100–250 cm.'},400);return
++        if not dependencies_available(): self.json_response({'error':'Install Python scanner dependencies: python -m pip install -r backend/requirements.txt'},503);return
++        with LOCK:
++            if PROCESS is not None or JOB.get('status')=='running': self.json_response({'error':'A scan is already running.'},409);return
++            JOB={'status':'running'}
++        threading.Thread(target=scan_worker,args=(height,),daemon=True).start()
++        self.json_response({'status':'running'},202)
++
++def main():
++    parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8765);args=parser.parse_args()
++    if not (DIST/'index.html').exists(): raise SystemExit('Build the website first: cd figma-web, npm install, npm run build')
++    server=ThreadingHTTPServer(('127.0.0.1',args.port),Handler)
++    print(f'Fit is ready: http://localhost:{args.port}',flush=True)
++    print('Keep this terminal open. Press Ctrl+C to stop.',flush=True)
++    try: server.serve_forever()
++    except KeyboardInterrupt: pass
++    finally:
++        server.server_close()
++        with LOCK:
++            if PROCESS is not None: PROCESS.terminate()
++
++if __name__=='__main__': main()

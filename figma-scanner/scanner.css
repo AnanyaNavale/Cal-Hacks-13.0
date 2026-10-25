@@ -1,0 +1,5 @@
+/* Append these rules to the END of your existing src/index.css. */
+.camera-view video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
+.measurement-canvas { position: absolute; inset: 0; width: 100%; height: 100%; transform: scaleX(-1); pointer-events: none; }
+.capture-bar { flex-wrap: wrap; padding: 12px; }
+.measurements ul { font-size: 12px; line-height: 1.5; color: #607572; padding-left: 18px; }

@@ -1,0 +1,12 @@
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+const model=resolve(root,'../pose_landmarker_heavy.task');
+if(!existsSync(model))throw new Error('Missing pose_landmarker_heavy.task in the repository root. Download the complete repository including model files.');
+mkdirSync(resolve(root,'public/models'),{recursive:true});
+mkdirSync(resolve(root,'public/wasm'),{recursive:true});
+copyFileSync(model,resolve(root,'public/models/pose_landmarker.task'));
+const wasm=resolve(root,'node_modules/@mediapipe/tasks-vision/wasm');
+for(const file of readdirSync(wasm))copyFileSync(resolve(wasm,file),resolve(root,'public/wasm',file));
+console.log('Local MediaPipe model and runtime are ready.');

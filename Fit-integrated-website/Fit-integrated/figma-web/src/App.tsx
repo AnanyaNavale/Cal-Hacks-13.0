@@ -1,0 +1,324 @@
+import { PythonScanner } from './PythonScanner'
+import { answerFit, computeFit, parseChart, recommendation } from './fitEngine'
+import type { Garment, SizeFit } from './fitEngine'
+import { useBodyScanner } from './useBodyScanner'
+import type { BodyProfile } from './bodyMeasurements'
+import { useCallback, useEffect, useRef, useState } from 'react'
+
+type Step = 'welcome' | 'scan' | 'review' | 'import' | 'compare' | 'questions'
+type CameraState = 'idle' | 'loading' | 'ready' | 'denied' | 'error'
+
+const steps: { id: Step; label: string }[] = [
+  { id: 'scan', label: 'Scan' },
+  { id: 'review', label: 'Review' },
+  { id: 'import', label: 'Garment' },
+  { id: 'compare', label: 'Compare' },
+  { id: 'questions', label: 'Ask' },
+]
+
+const Icon = ({ name, className = '' }: { name: 'arrow' | 'camera' | 'lock' | 'spark' | 'eye' | 'link' | 'check' | 'chevron'; className?: string }) => {
+  const paths = {
+    arrow: <><path d="M5 12h14M13 6l6 6-6 6"/></>,
+    camera: <><path d="M15 8h.01"/><path d="M4 7h3l2-3h6l2 3h3v12H4z"/><circle cx="12" cy="13" r="3"/></>,
+    lock: <><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></>,
+    spark: <><path d="m12 3 1.3 4.2L17 9l-3.7 1.8L12 15l-1.3-4.2L7 9l3.7-1.8z"/><path d="m5 15 .7 2.3L8 18l-2.3.7L5 21l-.7-2.3L2 18l2.3-.7z"/></>,
+    eye: <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></>,
+    link: <><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.2"/></>,
+    check: <path d="m5 12 4 4L19 6"/>,
+    chevron: <path d="m9 18 6-6-6-6"/>,
+  }
+  return <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>
+}
+
+function Button({ children, onClick, secondary = false, disabled = false, className = '', type = 'button' }: {
+  children: React.ReactNode; onClick?: () => void; secondary?: boolean; disabled?: boolean; className?: string; type?: 'button' | 'submit'
+}) {
+  return <button type={type} disabled={disabled} onClick={onClick} className={`btn ${secondary ? 'btn-secondary' : 'btn-primary'} ${className}`}>{children}</button>
+}
+
+function Silhouette({ heatmap = false, onArea, fit }: { heatmap?: boolean; onArea?: (area: string) => void; fit?: SizeFit }) {
+  const color = (zone: string) => `zone-${fit?.zones.find(z => z.zone === zone)?.status ?? 'unknown'}`
+  return (
+    <div className="silhouette-wrap" aria-label={heatmap ? 'Interactive body fit heatmap' : 'Body silhouette'}>
+      <svg viewBox="0 0 240 420" role="img" aria-label="Body fit silhouette">
+        <ellipse cx="120" cy="47" rx="30" ry="35" className="body-fill" />
+        <path className="body-fill" d="M83 83c-15 11-23 39-19 71l8 73-17 151c-2 19 28 24 34 4l26-121h10l26 121c6 20 36 15 34-4l-17-151 8-73c4-32-4-60-19-71-18 9-56 9-74 0Z"/>
+        {heatmap && <>
+          <path className={color('bust')} d="M70 105c20-10 80-10 100 0l1 40c-20 12-82 12-102 0Z"/>
+          <path className={color('waist')} d="M69 145c10 17 92 17 102 0l-3 47c-20 11-76 11-96 0Z"/>
+          <path className={color('hip')} d="m72 205 96 0 7 56H65Z"/>
+        </>}
+      </svg>
+      {heatmap && <>
+        <button className="area-dot bust" aria-label="Ask about bust fit" onClick={() => onArea?.('bust')} />
+        <button className="area-dot waist" aria-label="Ask about waist fit" onClick={() => onArea?.('waist')} />
+        <button className="area-dot hip" aria-label="Ask about hip fit" onClick={() => onArea?.('hips')} />
+      </>}
+    </div>
+  )
+}
+
+function Header({ step, go }: { step: Step; go: (step: Step) => void }) {
+  const active = Math.max(0, steps.findIndex(s => s.id === step))
+  return (
+    <header className="site-header">
+      <button className="brand" onClick={() => go('welcome')} aria-label="Fit home">fit<span>.</span></button>
+      {step !== 'welcome' && <nav aria-label="Fit journey" className="steps">
+        {steps.map((item, i) => <button key={item.id} onClick={() => i <= active && go(item.id)} aria-current={item.id === step ? 'step' : undefined} className={i <= active ? 'active' : ''}>
+          <span>{i < active ? <Icon name="check" /> : i + 1}</span><em>{item.label}</em>
+        </button>)}
+      </nav>}
+      <div className="privacy"><Icon name="lock" />Private by design</div>
+    </header>
+  )
+}
+
+function Welcome({ go }: { go: (s: Step) => void }) {
+  return <main className="welcome">
+    <section className="hero-copy">
+      <div className="eyebrow"><Icon name="spark" /> Fit, without the fitting room</div>
+      <h1>Less uncertainty.<br />More confident choices.</h1>
+      <p>See how clothes may fit your unique shape, from the comfort of home. No judgment, no standard bodies—just useful guidance.</p>
+      <div className="hero-actions">
+        <Button onClick={() => go('scan')}>Start body scan <Icon name="arrow" /></Button>
+        <span>Takes about 2 minutes</span>
+      </div>
+      <div className="trust-row">
+        <div><Icon name="lock" /><span><b>Stays on your device</b><small>Frames are never uploaded</small></span></div>
+        <div><Icon name="camera" /><span><b>You’re in control</b><small>Delete or retry anytime</small></span></div>
+      </div>
+      <div className="how-it-works" aria-label="How Fit works">
+        <p><b>How Fit helps.</b> Fit is designed to turn your measurements into useful clothing recommendations.</p>
+        <ol>
+          <li><span>1</span><div><b>Scan your shape</b><small>Capture measurements privately</small></div></li>
+          <li><span>2</span><div><b>Add any garment</b><small>Compare its cut and size chart</small></div></li>
+          <li><span>3</span><div><b>Find your fit</b><small>Get a size recommendation with a reason</small></div></li>
+        </ol>
+      </div>
+    </section>
+    <section className="hero-art" aria-label="A diverse group of body silhouettes">
+      <div className="arch">
+        <span className="shape shape-1" />
+        <span className="shape shape-2" />
+        <span className="shape shape-3" />
+        <span className="shape shape-4" />
+      </div>
+      <div className="floating-card"><span><Icon name="check" /></span><div><small>Made for every body</small><b>Body-neutral guidance</b></div></div>
+    </section>
+  </main>
+}
+
+function Scan({ go, onProfile }: { go: (s: Step) => void; onProfile: (profile: BodyProfile) => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const requestRef = useRef(0)
+  const [camera, setCamera] = useState<CameraState>('idle')
+  const [stage, setStage] = useState(0)
+  const [height, setHeight] = useState('')
+  const [manual, setManual] = useState(false)
+  const scanner = useBodyScanner(camera === 'ready' && !manual, videoRef, canvasRef, Number(height))
+  const stopCamera = () => {
+    requestRef.current += 1
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
+    if (videoRef.current) videoRef.current.srcObject = null
+    setCamera('idle')
+  }
+  useEffect(() => {
+    if (scanner.profile) {
+      requestRef.current += 1
+      streamRef.current?.getTracks().forEach(t => t.stop())
+      onProfile(scanner.profile)
+      go('review')
+    }
+  }, [scanner.profile, onProfile, go])
+  const scanStages = [
+    { title: 'Check your camera', short: 'Camera setup', detail: 'Use even lighting and a stable laptop. We use your entered height for scale; face calibration is not needed.', action: 'Continue to height' },
+    { title: 'Add your height', short: 'Enter height', detail: 'Your height provides the scale needed to estimate proportions. We will never guess it from the camera.', action: 'Save height & continue' },
+    { title: 'Show your full body', short: 'Full-body framing', detail: 'Step back until your entire body—from the top of your head to the soles of your shoes—is visible.', action: 'Confirm full body is visible' },
+    { title: 'Raise your arms into an A', short: 'A-pose', detail: 'Face forward and hold both arms diagonally DOWN, about 45 degrees away from your body. Keep your feet visible.', action: scanner.frontDone ? 'Continue to side scan' : 'Capture front view' },
+    { title: 'Turn sideways, arms down', short: 'Side turn', detail: 'Lower both arms to your sides, then turn 90 degrees to your left while keeping your whole body in frame.', action: 'Capture side view' },
+  ]
+  const currentStage = scanStages[stage]
+
+  const startCamera = async () => {
+    const request = ++requestRef.current
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    scanner.reset()
+    setCamera('loading')
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+      if (request !== requestRef.current) { stream.getTracks().forEach(t => t.stop()); return }
+      streamRef.current = stream
+      if (videoRef.current) videoRef.current.srcObject = stream
+      setCamera('ready')
+    } catch (error) {
+      if (request !== requestRef.current) return
+      setCamera(error instanceof DOMException && error.name === 'NotAllowedError' ? 'denied' : 'error')
+    }
+  }
+  useEffect(() => () => { requestRef.current += 1; streamRef.current?.getTracks().forEach(track => track.stop()) }, [])
+  const nextCapture = () => {
+    if (stage === 1 && !(Number(height) >= 100 && Number(height) <= 250)) return
+    if (stage === 3 && !scanner.frontDone) { scanner.capture('front'); return }
+    if (stage === 4) { scanner.capture('side'); return }
+    setStage(stage + 1)
+  }
+
+  if (manual) return <main className="page narrow">
+    <div className="page-title"><span className="eyebrow">Manual fallback</span><h1>Enter what you know</h1><p>Enter tape measurements if the webcam scan cannot complete.</p></div>
+    <form className="card form-grid" onSubmit={e => {
+      e.preventDefault()
+      const data = new FormData(e.currentTarget)
+      const measurementsCm = { bust: Number(data.get('Bust')), waist: Number(data.get('Waist')), hip: Number(data.get('Hips')) }
+      onProfile({heightCm: Number(data.get('Height')), measurementsCm, confidence: {bust:'low',waist:'low',hip:'low'}, source:'manual', scannedAt:new Date().toISOString(), notes:['Manually entered measurements; not a webcam scan.']})
+      go('review')
+    }}>
+      {['Height', 'Bust', 'Waist', 'Hips'].map((label, i) => <label key={label}>{label}<span><input required name={label} type="number" min="1" max="400" step="0.1" placeholder={i ? '—' : '165'} /><em>cm</em></span></label>)}
+      <Button type="submit" className="full">Review my details <Icon name="arrow" /></Button>
+      <Button secondary onClick={() => setManual(false)} className="full">Back to camera</Button>
+    </form>
+  </main>
+
+  return <main className="page scan-page">
+    <div className="page-title"><span className="eyebrow">Guided body scan</span><h1>Let’s get your best fit</h1><p>Wear fitted clothing and follow the guide. Nothing is recorded or uploaded.</p></div>
+    <div className="scan-layout">
+      <section className="camera-card">
+        <div className="camera-meta"><span>{currentStage.short}</span><small>{stage + 1} of {scanStages.length}</small></div>
+        <div className={`camera-view ${camera}`}>
+          <video ref={videoRef} autoPlay muted playsInline onLoadedMetadata={e => {const v=e.currentTarget;if(v.parentElement && v.videoWidth && v.videoHeight)v.parentElement.style.aspectRatio=`${v.videoWidth}/${v.videoHeight}`}} />
+          {camera === 'ready' && <canvas ref={canvasRef} aria-hidden="true" className="measurement-canvas" />}
+          {camera === 'ready' && stage !== 1 && <div className={`guide-outline stage-${stage}`}><span /></div>}
+          {camera === 'ready' && stage === 1 && <div className="height-prompt"><label>Your height<span><input aria-label="Height in centimetres" type="number" min="100" max="250" value={height} onChange={e => setHeight(e.target.value)} placeholder="165" /><em>cm</em></span></label><small>Enter your actual height so the scan can be scaled accurately.</small></div>}
+          {camera === 'idle' && <div className="camera-message"><span><Icon name="camera" /></span><h2>Camera access needed</h2><p>Your live preview stays in this browser.</p><Button onClick={startCamera}>Enable camera</Button></div>}
+          {camera === 'loading' && <div className="camera-message"><span className="spinner" /><h2>Starting camera…</h2><p>Check your browser permission prompt.</p></div>}
+          {(camera === 'denied' || camera === 'error') && <div className="camera-message error"><h2>{camera === 'denied' ? 'Camera permission blocked' : 'Camera unavailable'}</h2><p>{camera === 'denied' ? 'Allow camera access in browser settings, then retry.' : 'Close other camera apps or use manual entry.'}</p><Button onClick={startCamera}>Try again</Button></div>}
+        </div>
+        <div className="capture-bar">
+          <Button disabled={camera !== 'ready' || !scanner.ready || scanner.capturing || (stage === 1 && !(Number(height) >= 100 && Number(height) <= 250))} onClick={nextCapture}>{scanner.capturing ? `Capturing ${scanner.progress}%` : currentStage.action} <Icon name={stage === 4 ? 'check' : 'arrow'} /></Button>
+          <button className="text-button" onClick={() => { scanner.reset(); setStage(0); setHeight('') }}>Start over</button>
+        <button className="text-button" onClick={stopCamera}>Stop camera</button></div>
+      </section>
+      <aside className="tips-card">
+        <div className="progress-head"><span>Guide progress</span><b>{(stage + 1) * 20}%</b></div>
+        <div className="progress"><i style={{ width: `${(stage + 1) * 20}%` }} /></div>
+        <h2>{currentStage.title}</h2>
+        <p>{currentStage.detail}</p>
+        <ol className="scan-checklist">
+          {scanStages.map((item, index) => <li className={index === stage ? 'current' : index < stage ? 'complete' : ''} key={item.short}>
+            <span>{index < stage ? <Icon name="check" /> : index + 1}</span><b>{item.short}</b>
+          </li>)}
+        </ol>
+        <div className="detection-note"><Icon name="camera" /><span><b>Live measurement scanner</b><small role="status">{scanner.message}</small><small>Experimental estimates. Accuracy has not been validated against a tape measure.</small></span></div>
+        <PythonScanner heightCm={Number(height)} beforeStart={stopCamera} onProfile={p=>{onProfile(p);go('review')}}/>
+        <button className="manual-link" onClick={() => { stopCamera(); scanner.reset(); setManual(true) }}>Can’t use your camera? <b>Enter manually</b></button>
+      </aside>
+    </div>
+  </main>
+}
+
+function Review({ go, profile, onDelete }: { go: (s: Step) => void; profile: BodyProfile | null; onDelete: () => void }) {
+  const [revealed, setRevealed] = useState(false)
+  return <main className="page narrow-wide">
+    <div className="page-title"><span className="eyebrow">{profile?.source === 'manual' ? 'Profile ready' : 'Scan complete'}</span><h1>Your body profile</h1><p>Take a moment to review. You can rescan any time.</p></div>
+    <div className="review-grid">
+      <section className="card silhouette-card"><Silhouette /><div className="confidence"><span><Icon name="check" /></span><div><small>Measurement accuracy</small><b>Not validated</b></div></div></section>
+      <section className="card measurements">
+        <div className="card-head"><div><span className="demo-pill">{profile?.source === 'manual' ? 'Manual entry' : 'Webcam estimates'}</span><h2>Your measurements</h2></div><button className="reveal" onClick={() => setRevealed(!revealed)}><Icon name="eye" />{revealed ? 'Hide' : 'Reveal'}</button></div>
+        <p>Measurements clear when you refresh. Python mode also holds its last result in local server memory until replaced or deleted. The silhouette is an illustration, not a fitted model.</p>
+        {([['Bust','bust'],['Waist','waist'],['Hips','hip'],['Thigh','thigh'],['Shoulder width','shoulder'],['Inseam','inseam']] as const).map(([label,key]) => <div className="measure-row" key={key}><span>{label}</span><b>{!revealed ? '••••••••' : profile?.measurementsCm[key] != null ? `${profile.measurementsCm[key]} cm` : 'Not captured'}</b></div>)}
+        <ul>{profile?.notes.map(note => <li key={note}>{note}</li>)}</ul>
+        <div className="review-actions"><Button onClick={() => go('import')}>Add a garment <Icon name="arrow" /></Button><Button secondary onClick={() => go('scan')}>Scan again</Button><button className="text-button" onClick={async()=>{try{const r=await fetch('/api/health');if(r.ok && r.headers.get('content-type')?.includes('application/json')){const h=await r.json();await fetch('/api/scan/cancel',{method:'POST',headers:{'X-Fit-Session':h.sessionToken}})}}catch{/* Browser-only mode has no server profile. */}onDelete()}}>Delete profile</button></div>
+      </section>
+    </div>
+  </main>
+}
+
+function ImportGarment({ go, onGarment }: { go: (s: Step) => void; onGarment: (g: Garment) => void }) {
+  const [error, setError] = useState('')
+  return <main className="page narrow">
+    <div className="page-title"><span className="eyebrow">Add a garment</span><h1>What are you considering?</h1><p>Add the garment's actual dimensions to compare with your scan.</p></div>
+    <form className="card import-form" onSubmit={e => {
+      e.preventDefault()
+      try {
+        const data = new FormData(e.currentTarget)
+        if (data.get('confirmed') !== 'on') throw new Error('Confirm these are garment dimensions, not suggested body measurements.')
+        const garment = {title: String(data.get('title')).trim(), sourceUrl: String(data.get('url') || ''), fabric: String(data.get('fabric')), sizes: parseChart(String(data.get('chart')))}
+        if (!garment.title) throw new Error('Enter a garment name.')
+        onGarment(garment); go('compare')
+      } catch (error) {setError(error instanceof Error ? error.message : 'Check the size chart.')}
+    }}>
+      <label className="full">Product URL (optional reference)<span className="input-icon"><Icon name="link" /><input name="url" type="url" placeholder="https://shop.com/product" /></span></label>
+      <p className="full demo-note">Automatic product fetching is not connected. Copy the garment chart from the listing below.</p>
+      <label>Garment name<input name="title" required placeholder="e.g. Linen wrap dress" /></label>
+      <label>Fabric / stretch notes<input name="fabric" placeholder="e.g. Non-stretch linen" /></label>
+      <label className="full">Garment size chart (circumferences in cm)<textarea name="chart" required rows={7} placeholder={'size,bust,waist,hip\nPaste actual garment dimensions here'} /></label>
+      <p className="full demo-note">Use one size per row, starting with size,bust,waist,hip. Omit unavailable columns. Double a flat width only when the seller specifies a flat half-circumference.</p>
+      <label className="check-row full"><input type="checkbox" name="confirmed" required /><span><b>These are garment dimensions in centimeters</b><small>Recommended body measurements cannot be used as garment dimensions.</small></span></label>
+      {error && <p className="full missing" role="alert">{error}</p>}
+      <Button type="submit" className="full">Compare fit <Icon name="arrow" /></Button>
+    </form>
+  </main>
+}
+function Compare({ go, profile, garment, selected, onSelect, onArea }: { go: (s: Step) => void; profile: BodyProfile | null; garment: Garment | null; selected: string; onSelect: (s: string) => void; onArea: (area:string) => void }) {
+  if (!profile || !garment) return <main className="page narrow"><h1>Add your profile and a garment first</h1><Button onClick={()=>go(profile?'import':'scan')}>Continue</Button></main>
+  const results = computeFit(profile.measurementsCm, garment)
+  const best = recommendation(results)
+  const current = results.find(r=>r.size===selected) ?? results[0]
+  return <main className="page compare-page">
+    <div className="page-title split-title"><div><span className="eyebrow">Fit comparison</span><h1>{garment.title}</h1></div><Button secondary onClick={()=>go('import')}>Change garment</Button></div>
+    <div className="size-tabs" role="tablist" aria-label="Garment size">{results.map(r=><button key={r.size} role="tab" aria-selected={current.size===r.size} onClick={()=>onSelect(r.size)}>Size {r.size}{r.size===best?.size && <small>Suggested</small>}</button>)}</div>
+    <div className="compare-grid">
+      <section className="card heatmap-card"><span className="demo-pill">Profile-based estimate</span><Silhouette heatmap fit={current} onArea={a=>{onSelect(current.size);onArea(a);go('questions')}}/><div className="legend">{[['tight','Tight'],['snug','Snug'],['comfortable','Comfortable'],['loose','Loose'],['unknown','No data']].map(([c,l])=><span key={c}><i className={c}/>{l}</span>)}</div></section>
+      <section className="recommendation">
+        <div className="rec-top"><span><Icon name="spark"/></span><div><small>Suggested size</small><h2>{best?.size ?? 'No clear match'}</h2></div></div>
+        <h3>Viewing size {current.size}</h3>
+        <p>{best ? `Size ${best.size} avoids negative ease in measured zones and is closest to our basic comfort target on chart zones shared by all sizes.` : 'No size can be suggested without comparable chart data and room in the measured zones.'}</p>
+        <div className="fit-note">{current.zones.map(z=><span key={z.zone}><b>{z.zone}: </b>{z.easeCm===null ? 'Insufficient data' : `${z.status} · ${z.easeCm > 0 ? '+' : ''}${z.easeCm} cm ease`}</span>)}</div>
+        <p>Basic non-stretch heuristic: below 0 cm tight; 0–4 snug; 4–10 comfortable; above 10 loose. Stretch and cut are not modeled. Your scan remains an unvalidated estimate.</p>
+        <Button onClick={()=>{onSelect(current.size);go('questions')}}>Ask about this fit <Icon name="arrow"/></Button>
+      </section>
+    </div>
+  </main>
+}
+function Questions({ go, profile, garment, selected, initialArea }: { go: (s: Step) => void; profile: BodyProfile | null; garment: Garment | null; selected: string; initialArea: string }) {
+  const [area,setArea]=useState(initialArea)
+  const [question,setQuestion]=useState('')
+  const [answer,setAnswer]=useState('')
+  const fit=profile && garment ? computeFit(profile.measurementsCm,garment).find(r=>r.size===selected) ?? null : null
+  return <main className="page questions-page">
+    <div className="page-title"><span className="eyebrow">Fit questions</span><h1>Where would you like more detail?</h1><p>Choose an area for an explanation of the calculated fit.</p></div>
+    <div className="question-grid">
+      <section className="card question-body"><Silhouette heatmap fit={fit ?? undefined} onArea={a=>{setArea(a);setAnswer('')}}/><p>Tap a marker to choose a body area</p></section>
+      <section className="card ask-card">
+        <span className="selected-area">Selected area <b>{area}</b></span><h2>What would you like to know?</h2>
+        <div className="suggestions">{[`Will this feel restrictive at my ${area}?`,'Could I sit comfortably?','Could this gap at the back?'].map(q=><button key={q} onClick={()=>{setQuestion(q);setAnswer('')}}>{q}<Icon name="chevron"/></button>)}</div>
+        <label>Your question<textarea value={question} onChange={e=>{setQuestion(e.target.value);setAnswer('')}}/></label>
+        <Button disabled={!question.trim()} onClick={()=>setAnswer(answerFit(area,question,fit))}>Get fit guidance <Icon name="arrow"/></Button>
+        {answer && <p className="fit-answer" role="status">{answer}</p>}
+        <p className="demo-note">Calculated locally from the selected size. Claude is not connected; no profile or questions are uploaded.</p>
+        <button className="text-button" onClick={()=>go('compare')}>Back to comparison</button>
+      </section>
+    </div>
+  </main>
+}
+
+export default function App() {
+  const [step,setStep]=useState<Step>('welcome')
+  const [profile,setProfile]=useState<BodyProfile|null>(null)
+  const [garment,setGarment]=useState<Garment|null>(null)
+  const [selected,setSelected]=useState('')
+  const [area,setArea]=useState('waist')
+  const go=useCallback((next:Step)=>{setStep(next);window.scrollTo({top:0,behavior:'smooth'})},[])
+  const addGarment=(g:Garment)=>{setGarment(g);const best=profile?recommendation(computeFit(profile.measurementsCm,g)):null;setSelected(best?.size??g.sizes[0].label)}
+  return <div className="app"><Header step={step} go={go}/>
+    {step==='welcome' && <Welcome go={go}/>}
+    {step==='scan' && <Scan go={go} onProfile={setProfile}/>}
+    {step==='review' && <Review go={go} profile={profile} onDelete={()=>{setProfile(null);setGarment(null);setSelected('');go('welcome')}}/>}
+    {step==='import' && <ImportGarment go={go} onGarment={addGarment}/>}
+    {step==='compare' && <Compare go={go} profile={profile} garment={garment} selected={selected} onSelect={setSelected} onArea={setArea}/>}
+    {step==='questions' && <Questions go={go} profile={profile} garment={garment} selected={selected} initialArea={area}/>}
+    <footer>Fit guidance, not a promise. Every body and garment is different.</footer>
+  </div>
+}

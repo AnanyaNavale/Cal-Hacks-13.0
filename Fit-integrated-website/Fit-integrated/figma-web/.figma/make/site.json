@@ -1,0 +1,11 @@
+{
+  "description": "Helps women, especially plus-size shoppers, compare clothing sizes with private webcam-based body scans and see how garments may fit before buying.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  },
+  "title": "Fit \u2014 Your private fitting room"
+}
