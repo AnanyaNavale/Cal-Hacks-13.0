@@ -948,10 +948,13 @@ class Voice:
 
 
 # ------------------------------------------------------------ stage 1: age
-FACE_CASCADE_PATH = "/Users/mitushijain/Desktop/Face_scanning code/haarcascade_frontalface_default.xml"
-AGE_ONNX_PATH = "/Users/mitushijain/Desktop/Face_scanning code/age_googlenet.onnx"
+HERE = os.path.dirname(os.path.abspath(__file__))
+FACE_CASCADE_PATH = os.path.join(HERE, "haarcascade_frontalface_default.xml")
+if not os.path.exists(FACE_CASCADE_PATH):
+    FACE_CASCADE_PATH = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+AGE_ONNX_PATH = os.path.join(HERE, "age_googlenet.onnx")
 AGE_MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)
-AGE_BUCKETS = ['(0-2)', '(4-6)', '(8-12)', '(14-23)', '(25-32)', '(35-43)', '(48-53)', '(60-100)']
+AGE_BUCKETS = ['(0-2)', '(4-6)', '(8-12)', '(15-20)', '(25-32)', '(38-43)', '(48-53)', '(60-100)']
 REQUIRED_STABLE_FRAMES = 10       # same age bucket this many frames in a row = confirmed
 
 
