@@ -1,19 +1,18 @@
 """
-body_measure.py - Webcam body measurements (in + cm) using Letter/A4 paper as the scale.
+body_measure.py - Webcam body measurements (in + cm) using your height as the scale.
 MediaPipe Pose Landmarker (Tasks API) provides landmarks and segmentation.
 
-Usage: python body_measure.py [--camera 0] [--hfov 68] [--tilt-deg N] [--max-width 1920] [--no-voice]
+Usage: python body_measure.py [--camera 0] [--hfov 68] [--tilt-deg N] [--max-width 1920]
+                              [--height-cm N | --height-in N] [--no-voice]
 
-Steps (voice guided, automatic):
-  1. Locate: whole body incl. shoes in view, no paper yet. Step left, step right,
-     come back to the middle. The code learns the empty scene behind you.
-  2. Paper: hold Letter/A4 paper sideways against your stomach by the top corners,
-     eyes on the camera. Only white inside your outline counts as paper; once found,
-     the paper's edges are tracked instead of re-checking colour.
-  3. Front: drop the paper. A-pose: arms ~45 deg out, feet apart.
-  4. Turn: hands on your head, turn slowly in place, one full circle.
+Steps:
+  0. Start page: type your height in inches or cm, press Enter.
+     (--height-cm / --height-in skips this page.)
+  1. Front: barefoot or in socks, whole body in view, A-pose: arms ~45 deg out, feet apart.
+  2. Turn: hands on your head, turn slowly in place, one full circle.
 
-Keys: n skip turn  r restart  l tilt lines  a avatar  m mask  d debug  q quit
+Start page keys: digits . '  [I] inches  [C] cm  [Tab] switch  [Backspace]  [Enter] start  [Q]/[Esc] quit
+Scan keys:       n skip turn  r restart  l tilt lines  a avatar  m mask  d debug  q quit
 """
 import argparse
 import json
@@ -36,6 +35,7 @@ POSE_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
 POSE_PATH = "pose_landmarker_heavy.task"
 CM_PER_IN = 2.54
 FONT = cv2.FONT_HERSHEY_SIMPLEX
+WINDOW = "Body Measure"
 
 # Pose landmarks
 NOSE, L_EAR, R_EAR = 0, 7, 8
@@ -43,65 +43,22 @@ L_SH, R_SH, L_EL, R_EL, L_WR, R_WR = 11, 12, 13, 14, 15, 16
 L_HIP, R_HIP, L_KN, R_KN, L_AN, R_AN = 23, 24, 25, 26, 27, 28
 L_HEEL, R_HEEL, L_FT, R_FT = 29, 30, 31, 32
 FEET = (L_AN, R_AN, L_HEEL, R_HEEL, L_FT, R_FT)
-CORE = [NOSE, L_SH, R_SH, L_HIP, R_HIP, L_KN, R_KN]      # paper step: hands may be hidden
+CORE = [NOSE, L_SH, R_SH, L_HIP, R_HIP, L_KN, R_KN]
 FULL_BODY = CORE + [L_EL, R_EL, L_WR, R_WR]
 
-# Paper
-PAPERS = {"Letter": (279.4, 215.9), "A4": (297.0, 210.0)}  # mm, landscape (W, H)
-PAPER_RATIO_TOL = 0.05            # Letter-vs-A4 sanity check; scale uses the horizontal edge
-PAPER_SLOPE_TOL = (0.06, 0.10)    # top/bottom and left/right edge slope difference
-PAPER_MAX_A, PAPER_MAX_B = 12.0, 30.0   # Lab tint limits: paper passes, skin fails on A
-PAPER_SIZE_REL = 0.002
-MIN_PAPER_PX = 70
-DEFAULT_OFFSET_MM = 100.0         # paper-to-body-center distance if the turn is skipped
-PAPER_MIN_FRAMES, PAPER_MAX_FRAMES, STATURE_MIN_FRAMES = 20, 45, 15
-PAPER_TARGET_SPREAD = 0.006       # finish early once paper + height are this consistent
-
-# Stricter paper specs (initial detection)
-PAPER_W_SHOULDER = (0.40, 1.20)   # paper width / shoulder-joint distance
-PAPER_ASPECT = (1.15, 1.60)       # long/short side of the min-area rectangle
-PAPER_RECT_FILL = 0.85            # blob area / min-area rectangle area
-PAPER_SOLIDITY = 0.92             # blob area / convex hull area
-PAPER_MAX_TEXTURE = 0.12          # gray std / mean inside the paper (plain sheet)
-PAPER_MIN_BORDER_CONTRAST = 20    # gray levels brighter than the ring around it
-PAPER_HAND_DIST = 0.6             # wrist to nearest top corner, x paper width
-PAPER_CHECK_HINTS = {
-    "paper_on_torso": "Hold the paper in front of your stomach",
-    "paper_free": "The paper blends into something white - hold it against your shirt",
-    "paper_hands": "Pinch the top two corners of the paper",
-    "paper_texture": "Use a plain, blank sheet of paper",
-    "paper_aspect": "Hold the paper sideways, flat and taut",
-    "paper_enclosed": "Keep the paper inside your outline, edges over your shirt",
-}
-
-# Tracking once the paper is found
-LOCK_FRAMES = 5                   # consistent detections needed before locking on
-TRACK_MAX_MISSES = 6              # bad frames in a row before the lock is dropped
-TRACK_MIN_SUPPORT = 0.5           # share of edge samples that must show a clear edge
-TRACK_MAX_AREA_CHANGE = 0.12      # vs. size at lock time
-TRACK_PARALLEL_DEG = 4.0          # opposite sides must stay parallel
+# Height entry
+HEIGHT_MIN_CM, HEIGHT_MAX_CM = 90.0, 250.0
+HEIGHT_UNC_CM = 1.0               # how accurately people usually know their height
 
 # Capture
 FRONT_FRAMES = 45
 TURN_MIN_SEC, TURN_MAX_SEC = 6.0, 40.0
 YAW_BINS, MIN_PER_BIN, MIN_BINS_FILLED = 12, 2, 9   # 15 deg bins over 180 deg
-STABLE_SEC, HOLD_SEC, HINT_DELAY = 1.0, 2.0, 0.6
+STABLE_SEC, HOLD_SEC = 1.0, 2.0
 MOTION_SHIFT_PX = 0.6             # whole-image shift (at 320 px wide) = camera moved
-MAX_MISSES = 15
-FRONT_LOST_SEC = 2.0              # pose lost this long during scanning -> back to "Step 3"
+FRONT_LOST_SEC = 2.0              # pose lost this long during scanning -> back to waiting
 TILT_WARN_DEG = 15
 VP_EVERY, VP_HISTORY, VP_MIN_LINES, VP_INLIER_DEG, VP_MAX_TILT = 5, 15, 4, 1.5, 40
-
-# Step 1: learn the empty scene while the person steps aside
-BG_W = 320                  # background model width (pixels)
-BG_MIN_SEEN = 3             # frames a pixel must be uncovered before it's trusted
-BG_COVER_TARGET = 0.97      # share of the frame learned before moving on
-BG_COVER_MIN = 0.85         # accepted after BG_MAX_SEC
-BG_MIN_SEC, BG_MAX_SEC = 3.0, 25.0
-BG_MIN_MOVES = 10           # frames of real person motion required
-BG_DIFF = 28                # colour distance that counts as "not background"
-BG_MOTION_DIFF = 20         # frame-to-frame change that counts as motion
-LOCATE_TRAVEL = 0.8         # sideways step needed each way, x shoulder width
 
 # Body model
 CHEST_F = 0.33
@@ -113,23 +70,18 @@ SYS_LEN, SYS_WIDTH, SYS_CIRC, SYS_EST_CIRC = 0.003, 0.01, 0.015, 0.04
 LANDMARK_ABS_CM = 1.2             # joint-based lengths (sleeve, inseam, rise)
 
 DEBUG = {}                        # name -> (value, passed), drawn on screen
-CAND_VIEW = {}                    # paper candidate mask, drawn on screen
 
 STEPS = {  # state: (on-screen title, spoken prompt)
-    "locate": ("Step 1 of 4: Step left, then right, then back to the middle",
-               "Step 1. Stand about nine feet back, so your whole body, including your "
-               "shoes, is in view. Don't hold the paper yet. Take a big step to your left, "
-               "then a big step to your right, then come back to the middle."),
-    "paper": ("Step 2 of 4: Hold the paper flat against your stomach",
-              "Step 2. Stay in the middle and pick up the paper. Hold it sideways against "
-              "your stomach. Pinch the top two corners and pull it taut. Keep your eyes "
-              "on the camera."),
-    "front_wait": ("Step 3 of 4: Drop the paper, arms out in an A shape",
-                   "Step 3. Drop the paper. Hold your arms out in an A shape, with your feet apart."),
-    "front": ("Step 3 of 4: Scanning - hold still", "Scanning. Hold still."),
-    "turn_wait": ("Step 4 of 4: Hands on your head, stay on the same spot",
-                  "Step 4. Stay on the same spot, and put both hands on your head."),
-    "turn": ("Step 4 of 4: Turn slowly in a full circle", "Now turn slowly in place, one full circle."),
+    "height": ("Enter your height",
+               "Type your height, then press Enter. Press I for inches, or C for centimeters."),
+    "front_wait": ("Step 1 of 2: Stand back, arms out in an A shape",
+                   "Step 1. Take your shoes off, and stand about nine feet back, so your whole "
+                   "body, including your feet, is in view. Hold your arms out in an A shape, "
+                   "with your feet apart."),
+    "front": ("Step 1 of 2: Scanning - hold still", "Scanning. Hold still."),
+    "turn_wait": ("Step 2 of 2: Hands on your head, stay on the same spot",
+                  "Step 2. Stay on the same spot, and put both hands on your head."),
+    "turn": ("Step 2 of 2: Turn slowly in a full circle", "Now turn slowly in place, one full circle."),
     "live": ("Done! Measurements saved to measurements.json",
              "All done. Your measurements are on screen."),
 }
@@ -155,8 +107,10 @@ def fmt_pm(v, u):
     return f"{to_in(v):.1f} +/- {to_in(u):.1f} in / {v:.1f} +/- {u:.1f} cm"
 
 
-def fmt_height(v, u):
+def fmt_height(v, u=None):
     ft, inch = divmod(to_in(v), 12)
+    if u is None:
+        return f"{int(ft)}' {inch:.1f}\" / {v:.1f} cm"
     return f"{int(ft)}' {inch:.1f}\" +/- {to_in(u):.1f} in / {v:.1f} +/- {u:.1f} cm"
 
 
@@ -254,7 +208,7 @@ def find_crotch(blob, x, y_start, y_stop):
 
 
 def find_sole(blob, pts, margin, retry=True):
-    """Bottom of the shoe (zero point). Searches only just below each foot, so floor
+    """Bottom of the foot (zero point). Searches only just below each foot, so floor
     shadows merged into the mask can't pull it down."""
     h, w = blob.shape
     soles = []
@@ -298,6 +252,101 @@ def torso_frame(pts):
     row_y = lambda f: sh_m[1] + f * torso_px
     row_x = lambda f: sh_m[0] + min(f, 1.0) * (hip_m[0] - sh_m[0])
     return sh_m, hip_m, torso_px, row_y, row_x
+
+
+# ------------------------------------------------------------ height entry
+def parse_height(text, unit):
+    """Returns (height_cm or None, error message). Inches accept 69, 69.5, 5'9 or 5 9."""
+    t = text.strip().replace('"', "")
+    if not t:
+        return None, "Type your height first"
+    try:
+        if unit == "cm":
+            cm = float(t)
+        elif "'" in t or " " in t:
+            ft, _, inch = t.replace("'", " ").partition(" ")
+            inch = float(inch.strip() or 0)
+            if inch >= 12:
+                return None, "The inches part should be less than 12"
+            cm = (float(ft) * 12 + inch) * CM_PER_IN
+        else:
+            cm = float(t) * CM_PER_IN
+    except ValueError:
+        return None, "That doesn't look like a number"
+    if not HEIGHT_MIN_CM <= cm <= HEIGHT_MAX_CM:
+        if unit == "cm":
+            return None, f"Enter a height between {HEIGHT_MIN_CM:.0f} and {HEIGHT_MAX_CM:.0f} cm"
+        return None, (f"Enter a height between {to_in(HEIGHT_MIN_CM):.0f} and "
+                      f"{to_in(HEIGHT_MAX_CM):.0f} inches")
+    return cm, ""
+
+
+def edit_height(k, text, unit):
+    """Applies one key press on the start page. Returns (text, unit, enter_pressed)."""
+    if k < 0:
+        return text, unit, False
+    ch = chr(k)
+    if k in (8, 127):                                  # Backspace (Windows/Linux, macOS)
+        return text[:-1], unit, False
+    if k in (13, 10):                                  # Enter
+        return text, unit, True
+    if ch in "iI":
+        return (text if unit == "in" else ""), "in", False
+    if ch in "cC":
+        return (text if unit == "cm" else ""), "cm", False
+    if k == 9:                                         # Tab
+        return "", ("cm" if unit == "in" else "in"), False
+    if len(text) < 8 and (ch.isdigit() or ch == "." or (unit == "in" and ch in "' ")):
+        return text + ch, unit, False
+    return text, unit, False
+
+
+def draw_height_page(img, text, unit, preview_cm, error):
+    h, w = img.shape[:2]
+    s = w / 1280
+    img[:] = (img * 0.25).astype(np.uint8)
+    th, big = max(1, int(2 * s)), max(2, int(3 * s))
+
+    def center(t, y, sc, col, thick=th):
+        tw = cv2.getTextSize(t, FONT, sc, thick)[0][0]
+        cv2.putText(img, t, ((w - tw) // 2, int(y)), FONT, sc, col, thick, cv2.LINE_AA)
+
+    center("Body Measure", 0.15 * h, 1.6 * s, (0, 255, 255), big)
+    center("How tall are you, without shoes?", 0.25 * h, 1.0 * s, (255, 255, 255))
+
+    # Unit buttons
+    bw_, bh_, gap, y0 = int(220 * s), int(60 * s), int(30 * s), int(0.31 * h)
+    for i, (u, label) in enumerate((("in", "[I] inches"), ("cm", "[C] cm"))):
+        x0 = w // 2 - bw_ - gap // 2 + i * (bw_ + gap)
+        on = u == unit
+        if on:
+            cv2.rectangle(img, (x0, y0), (x0 + bw_, y0 + bh_), (0, 160, 0), -1)
+        cv2.rectangle(img, (x0, y0), (x0 + bw_, y0 + bh_),
+                      (255, 255, 255) if on else (130, 130, 130), th)
+        (tw, tht), _ = cv2.getTextSize(label, FONT, 0.9 * s, th)
+        cv2.putText(img, label, (x0 + (bw_ - tw) // 2, y0 + (bh_ + tht) // 2), FONT, 0.9 * s,
+                    (255, 255, 255) if on else (170, 170, 170), th, cv2.LINE_AA)
+
+    # Input box
+    box_w, box_h = int(460 * s), int(90 * s)
+    x0, y0 = (w - box_w) // 2, int(0.45 * h)
+    cv2.rectangle(img, (x0, y0), (x0 + box_w, y0 + box_h), (40, 40, 40), -1)
+    cv2.rectangle(img, (x0, y0), (x0 + box_w, y0 + box_h), (255, 255, 255), th)
+    cursor = "|" if int(time.monotonic() * 2) % 2 == 0 else " "
+    suffix = "" if "'" in text else f" {unit}"
+    center(text + cursor + suffix, y0 + box_h * 0.68, 1.5 * s, (255, 255, 255), big)
+
+    y = y0 + box_h + 45 * s
+    center("e.g.  69   or   5'9" if unit == "in" else "e.g.  175", y, 0.8 * s, (170, 170, 170))
+    y += 50 * s
+    if error:
+        center(error, y, 0.85 * s, (0, 0, 255))
+    elif preview_cm:
+        center(f"= {fmt_height(preview_cm)}", y, 0.85 * s, (0, 220, 0))
+    center("For the scan, stand barefoot or in socks - your height sets the scale.",
+           0.84 * h, 0.7 * s, (0, 255, 255))
+    center("[Enter] start   [Backspace] delete   [Tab] switch units   [Q] quit",
+           0.92 * h, 0.7 * s, (200, 200, 200))
 
 
 # ------------------------------------------------------------------ camera
@@ -434,594 +483,6 @@ class VanishingTilt:
         return tilt
 
 
-# ------------------------------------------------------- background / bounds
-class BackgroundModel:
-    """Learns the empty scene while the person steps left and right: every pixel
-    they uncover is averaged into the background. Frame differencing confirms the
-    motion comes from the person, not someone walking by or a light flicker."""
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.sum = self.cnt = self.prev = self.bg = self.known = None
-        self.t0 = self.home = None
-        self.span = [0.0, 0.0]          # furthest travel to the person's left / right
-        self.moves, self.finished = 0, False
-
-    def _small(self, img, interp=cv2.INTER_AREA):
-        h, w = img.shape[:2]
-        return cv2.resize(img, (BG_W, max(1, round(BG_W * h / w))), interpolation=interp)
-
-    def _person(self, seg, grow=15):
-        """Person mask at model resolution, grown to cover hair, edges and shadow."""
-        p = self._small((seg > 0.2).astype(np.uint8), cv2.INTER_NEAREST)
-        return cv2.dilate(p, np.ones((grow, grow), np.uint8)) > 0
-
-    @property
-    def coverage(self):
-        return 0.0 if self.cnt is None else float((self.cnt >= BG_MIN_SEEN).mean())
-
-    def progress(self):
-        return min(1.0, self.coverage / BG_COVER_TARGET)
-
-    def update(self, frame, seg, pts, body_ok):
-        """Learns from one frame and returns the instruction to show."""
-        hip_x = mid(pts[L_HIP], pts[R_HIP])[0]
-        sh_px = max(dist(pts[L_SH], pts[R_SH]), 1.0)
-        if self.home is None:
-            if not body_ok:
-                return None                 # start once the whole body is in view
-            self.home, self.t0 = hip_x, time.monotonic()
-
-        small = self._small(frame).astype(np.float32)
-        person = self._person(seg)
-        if self.sum is None:
-            self.sum = np.zeros_like(small)
-            self.cnt = np.zeros(small.shape[:2], np.float32)
-        free = ~person
-        self.sum[free] += small[free]
-        self.cnt[free] += 1
-
-        # Motion: what changed since the last frame, and is it the person?
-        gray = cv2.cvtColor(small.astype(np.uint8), cv2.COLOR_BGR2GRAY)
-        if self.prev is not None:
-            moving = cv2.absdiff(gray, self.prev) > BG_MOTION_DIFF
-            n = int(moving.sum())
-            on_person = float((moving & person).sum()) / max(n, 1)
-            if n > 0.003 * moving.size and on_person > 0.7:
-                self.moves += 1
-            DEBUG["motion_on_person"] = (on_person, on_person > 0.7)
-        self.prev = gray
-
-        # The view is mirrored, so the person's left is screen-left
-        off = (self.home - hip_x) / sh_px
-        self.span = [max(self.span[0], off), max(self.span[1], -off)]
-        elapsed, cov = time.monotonic() - self.t0, self.coverage
-        DEBUG["bg_coverage"] = (cov, cov >= BG_COVER_TARGET)
-        DEBUG["travel_left/right"] = (f"{self.span[0]:.1f}/{self.span[1]:.1f}",
-                                      min(self.span) >= LOCATE_TRAVEL)
-        DEBUG["person_motion"] = (f"{self.moves}/{BG_MIN_MOVES}", self.moves >= BG_MIN_MOVES)
-
-        if self.span[0] < LOCATE_TRAVEL:
-            return "Take a big step to your left"
-        if self.span[1] < LOCATE_TRAVEL:
-            return "Now take a big step to your right"
-        if not (cov >= BG_COVER_TARGET or (elapsed > BG_MAX_SEC and cov >= BG_COVER_MIN)):
-            return "Step to the side again, until the red area is gone"
-        if self.moves < BG_MIN_MOVES:
-            return "Step left and right once more"
-        if abs(off) > 0.3:
-            return "Come back to the middle"
-        if elapsed >= BG_MIN_SEC:
-            self.bg = self.sum / np.maximum(self.cnt, 1)[..., None]
-            self.known = self.cnt >= BG_MIN_SEEN
-            self.finished = True
-        return "Got it - stay in the middle"
-
-    def unseen(self, w, h):
-        """Full-res mask of pixels not learned yet (shown in red)."""
-        m = (self.cnt < BG_MIN_SEEN).astype(np.uint8)
-        return cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST) > 0
-
-    def classify(self, frame, seg):
-        """Full-res (foreground, known_background) masks against the empty scene."""
-        h, w = frame.shape[:2]
-        small = self._small(frame).astype(np.float32)
-        ref = self.known & ~self._person(seg, 25)
-        if ref.sum() > 200:                 # follow webcam auto-exposure changes
-            small *= float(np.median(self.bg[ref])) / max(float(np.median(small[ref])), 1.0)
-        d = np.abs(small - self.bg).max(axis=2)
-        up = lambda m: cv2.resize(m.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST) > 0
-        return up(self.known & (d > BG_DIFF)), up(self.known & (d <= BG_DIFF))
-
-
-def paper_region(seg, fg, known_bg, pts):
-    """Where the paper may be: the person's filled outline (segmentation OR
-    background difference, holes filled so a paper the segmenter dropped is
-    included), minus learned background outside the torso (arm gaps)."""
-    m = ((seg > 0.5) | fg).astype(np.uint8)
-    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-    blob, _ = person_blob(m.astype(np.float32), pts)
-    if blob is None:
-        return None
-    cnts = cv2.findContours(blob.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
-    region = np.zeros(blob.shape, np.uint8)
-    cv2.drawContours(region, cnts, -1, 1, cv2.FILLED)
-    # Inside the torso, background can't be used to exclude anything: a white
-    # paper can match a white wall behind you. Outside it, it removes arm gaps.
-    quad = np.array([pts[i] for i in (L_SH, R_SH, R_HIP, L_HIP)], np.float32)
-    c = quad.mean(0)
-    quad = c + (quad - c) * np.array([1.3, 1.4], np.float32)
-    zone = np.zeros_like(region)
-    cv2.fillConvexPoly(zone, quad.astype(np.int32), 1)
-    return (region > 0) & ~(known_bg & (zone == 0))
-
-
-# ------------------------------------------------------------ paper detection
-def chroma(bgr):
-    """< 1 for near-neutral colours (paper, even under warm light); > 1 for skin."""
-    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
-    return np.maximum(np.abs(lab[..., 1] - 128) / PAPER_MAX_A, np.abs(lab[..., 2] - 128) / PAPER_MAX_B)
-
-
-def bright_neutral(bgr, kern, blur=False):
-    """Mask of bright, neutral (paper-like) pixels with thin stripes removed."""
-    g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    c = chroma(bgr)
-    t = cv2.threshold(cv2.GaussianBlur(g, (5, 5), 0) if blur else g, 0, 255,
-                      cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0]
-    m = cv2.morphologyEx(((g > t) & (c < 1)).astype(np.uint8), cv2.MORPH_OPEN, kern)
-    return m, g.astype(np.float32), c, t
-
-
-def paper_blob_checks(comp, st, gray, pts, vis, g, region_roi):
-    """[(name, value, passed)] - every check must pass for a blob to count as paper."""
-    x, y, bw, bh, area = (int(v) for v in st)
-    H, W = comp.shape
-    c8 = comp.astype(np.uint8)
-    cnts = cv2.findContours(c8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
-    cnt = max(cnts, key=cv2.contourArea)
-    _, (rw, rh), _ = cv2.minAreaRect(cnt)
-    rect_fill = area / max(rw * rh, 1.0)
-    solidity = area / max(cv2.contourArea(cv2.convexHull(cnt)), 1.0)
-    aspect = max(rw, rh) / max(min(rw, rh), 1.0)
-
-    # Plain surface inside, darker ring outside
-    k = max(3, int(0.06 * min(bw, bh))) | 1
-    inner = cv2.erode(c8, np.ones((k, k), np.uint8)) > 0
-    if inner.sum() < 50:
-        inner = comp
-    ring = (cv2.dilate(c8, np.ones((2 * k + 1, 2 * k + 1), np.uint8)) > 0) & \
-           ~(cv2.dilate(c8, np.ones((k, k), np.uint8)) > 0)
-    inside = gray[inner]
-    texture = float(inside.std() / (inside.mean() + 1e-6))
-    contrast = float(inside.mean() - gray[ring].mean()) if ring.any() else 0.0
-
-    # Position: on the stomach, not merged with the search-box border
-    ox, oy = g["off"]
-    fx, fy = ox + x + bw / 2, oy + y + bh / 2
-    on_torso = (abs(fx - g["cx"]) < 0.35 * g["sh_px"] and
-                g["sh_y"] + 0.2 * g["torso"] < fy < g["hip_y"] + 0.3 * g["torso"])
-    touches = x <= 1 or y <= 1 or x + bw >= W - 1 or y + bh >= H - 1
-
-    # Surrounded by the person (shirt, hands), not by the room
-    grown = cv2.dilate(c8, np.ones((5, 5), np.uint8)) > 0
-    enclosed = not (grown & ~region_roi).any()
-
-    # Hands near the top corners (only checked when wrists are clearly visible)
-    corners = [(ox + x, oy + y), (ox + x + bw, oy + y)]
-    wrists = [pts[i] for i in (L_WR, R_WR) if vis[i] > 0.6]
-    hand = max((min(dist(p, c) for c in corners) for p in wrists), default=0.0) / max(bw, 1)
-
-    wsh = bw / g["sh_px"]
-    return [
-        ("paper_w/shoulder", wsh, PAPER_W_SHOULDER[0] <= wsh <= PAPER_W_SHOULDER[1]),
-        ("paper_aspect", aspect, PAPER_ASPECT[0] <= aspect <= PAPER_ASPECT[1]),
-        ("paper_rect_fill", rect_fill, rect_fill >= PAPER_RECT_FILL),
-        ("paper_solidity", solidity, solidity >= PAPER_SOLIDITY),
-        ("paper_texture", texture, texture <= PAPER_MAX_TEXTURE),
-        ("paper_contrast", contrast, contrast >= PAPER_MIN_BORDER_CONTRAST),
-        ("paper_on_torso", "yes" if on_torso else "no", on_torso),
-        ("paper_free", "no" if touches else "yes", not touches),
-        ("paper_hands", hand, hand <= PAPER_HAND_DIST),
-        ("paper_enclosed", "yes" if enclosed else "no", enclosed),
-    ]
-
-
-def subpix_run(profile, valid, t):
-    """Sub-pixel threshold crossings at the start and end of the bright run."""
-    idx = np.flatnonzero(valid)
-    if idx.size < 3 or idx[0] == 0 or idx[-1] >= len(profile) - 1:
-        return None
-    i, j = int(idx[0]), int(idx[-1])
-    a, b, c, d = (float(profile[k]) for k in (i - 1, i, j, j + 1))
-    fs = float(np.clip((t - a) / (b - a), 0, 1)) if b != a else 0.5
-    fe = float(np.clip((c - t) / (c - d), 0, 1)) if c != d else 0.5
-    return (i - 1) + fs, j + fe
-
-
-def robust_line(a, b):
-    """Fit b = m*a + c, iteratively discarding outliers (e.g. a stray finger)."""
-    a, b = np.asarray(a, float), np.asarray(b, float)
-    if a.size < 8:
-        return None
-    keep = np.ones(a.size, bool)
-    for _ in range(4):
-        if keep.sum() < 6:
-            return None
-        m, c = np.polyfit(a[keep], b[keep], 1)
-        r = b - (m * a + c)
-        keep = np.abs(r) < max(0.75, 2.5 * (1.4826 * np.median(np.abs(r[keep])) + 1e-6))
-    return (float(m), float(c)) if keep.sum() >= 6 else None
-
-
-def order_corners(pts):
-    pts = np.asarray(pts, dtype=np.float32).reshape(4, 2)
-    s, d = pts.sum(axis=1), pts[:, 1] - pts[:, 0]
-    return np.array([pts[np.argmin(s)], pts[np.argmin(d)],
-                     pts[np.argmax(s)], pts[np.argmax(d)]], dtype=np.float32)  # tl, tr, br, bl
-
-
-def quad_from_mask(mask):
-    """Fallback 4-corner fit of the paper region when edge tracing fails."""
-    m = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    cnts = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[-2]
-    if not cnts:
-        return None
-    hull = cv2.convexHull(max(cnts, key=cv2.contourArea))
-    if cv2.contourArea(hull) < 400:
-        return None
-    peri = cv2.arcLength(hull, True)
-    for eps in (0.02, 0.03, 0.04, 0.06):
-        approx = cv2.approxPolyDP(hull, eps * peri, True)
-        if len(approx) == 4:
-            return order_corners(approx)
-    return order_corners(cv2.boxPoints(cv2.minAreaRect(hull)))
-
-
-def detect_paper(frame, pts, vis, vc, region):
-    """Finds the paper held over the torso, looking only inside the person's
-    outline. Returns (detection or None, hint)."""
-    h, w = frame.shape[:2]
-    sh_px = dist(pts[L_SH], pts[R_SH])
-    sh_y, hip_y = mid(pts[L_SH], pts[R_SH])[1], mid(pts[L_HIP], pts[R_HIP])[1]
-    torso = hip_y - sh_y
-    if sh_px < 20 or torso < 30:
-        return None, "Face the camera"
-    k = max(3, int(0.05 * sh_px)) | 1
-    kern = np.ones((k, k), np.uint8)
-
-    # Coarse search: bright, neutral region inside the person that passes every check
-    cx = sum(pts[i][0] for i in (L_SH, R_SH, L_HIP, R_HIP)) / 4
-    x0, x1 = int(max(0, cx - 1.6 * sh_px)), int(min(w, cx + 1.6 * sh_px))
-    y0, y1 = int(max(0, sh_y - 0.1 * torso)), int(min(h, hip_y + 0.6 * torso))
-    if x1 - x0 < 30 or y1 - y0 < 30:
-        return None, "Move to the center of the frame"
-    roi = frame[y0:y1, x0:x1]
-    region_roi = region[y0:y1, x0:x1]
-    cand = bright_neutral(roi, kern, blur=True)[0] & region_roi.astype(np.uint8)
-    CAND_VIEW["cand"] = (cand, x0, y0)
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(cand, connectivity=8)
-    if n <= 1:
-        return None, "Hold the paper sideways, flat against your stomach"
-
-    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    geo = dict(off=(x0, y0), sh_px=sh_px, sh_y=sh_y, hip_y=hip_y, torso=torso, cx=cx)
-    best, best_checks = None, None
-    for i in 1 + np.argsort(stats[1:, cv2.CC_STAT_AREA])[::-1][:5]:   # 5 largest blobs
-        if stats[i, cv2.CC_STAT_AREA] < 0.04 * sh_px ** 2:
-            break
-        checks = paper_blob_checks(labels == i, stats[i], roi_gray, pts, vis, geo, region_roi)
-        if all(ok for *_, ok in checks):
-            best, best_checks = i, checks
-            break
-        if best_checks is None or sum(c[2] for c in checks) > sum(c[2] for c in best_checks):
-            best_checks = checks
-    for name, v, ok in best_checks or []:
-        DEBUG[name] = (v, ok)
-    if best is None:
-        failed = [name for name, _, ok in (best_checks or []) if not ok]
-        hint = next((PAPER_CHECK_HINTS[f] for f in failed if f in PAPER_CHECK_HINTS),
-                    "Hold the paper sideways, flat against your stomach")
-        return None, hint
-    bx, by, bw, bh, _ = stats[best]
-
-    # Fine fit on a padded crop with a local threshold
-    pad = max(8, int(0.15 * bw))
-    X0, Y0 = max(0, x0 + bx - pad), max(0, y0 + by - pad)
-    X1, Y1 = min(w, x0 + bx + bw + pad), min(h, y0 + by + bh + pad)
-    m, cg, cs, t2 = bright_neutral(frame[Y0:Y1, X0:X1], kern)
-    m = m & region[Y0:Y1, X0:X1].astype(np.uint8)
-    n2, lab2, st2, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
-    if n2 <= 1:
-        return None, "Hold the paper flat against your stomach"
-    comp = lab2 == 1 + int(np.argmax(st2[1:, cv2.CC_STAT_AREA]))
-    ys, xs = np.nonzero(comp)
-    if xs.size < 200:
-        return None, "Step a little closer to the camera"
-
-    # Rotate so the paper's edges are axis-aligned (landscape or portrait)
-    mx, my = float(xs.mean()), float(ys.mean())
-    vx, vy = np.linalg.eigh(np.cov(np.vstack([xs - mx, ys - my])))[1][:, 1]
-    ang = (math.degrees(math.atan2(vy, vx)) + 45) % 90 - 45
-    if abs(ang) > 20:
-        return None, "Hold the paper level"
-    M = cv2.getRotationMatrix2D((mx, my), ang, 1.0)
-    size = (m.shape[1], m.shape[0])
-    rg, rs = (cv2.warpAffine(a, M, size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-              for a in (cg, cs))
-    rc = cv2.warpAffine(comp.astype(np.uint8), M, size, flags=cv2.INTER_NEAREST)
-    valid = (rg > t2) & (rs < 1) & (cv2.dilate(rc, np.ones((3, 3), np.uint8)) > 0)
-    cols, rows = np.flatnonzero(valid.any(axis=0)), np.flatnonzero(valid.any(axis=1))
-    if cols.size < 20 or rows.size < 15:
-        return None, "Step a little closer to the camera"
-    cx0, cx1, ry0, ry1 = cols[0], cols[-1], rows[0], rows[-1]
-
-    # Precise path: sub-pixel edge lines (outlier rows, e.g. fingers, are discarded)
-    top, bot, left, right = [], [], [], []
-    for x in range(int(cx0 + 0.1 * (cx1 - cx0)), int(cx0 + 0.9 * (cx1 - cx0)) + 1):
-        r = subpix_run(rg[:, x], valid[:, x], t2)
-        if r:
-            top.append((x, r[0]))
-            bot.append((x, r[1]))
-    for y in range(int(ry0 + 0.1 * (ry1 - ry0)), int(ry0 + 0.9 * (ry1 - ry0)) + 1):
-        r = subpix_run(rg[y, :], valid[y, :], t2)
-        if r:
-            left.append((y, r[0]))
-            right.append((y, r[1]))
-    DEBUG["edge_top_bottom"] = (len(top), len(top) >= 8)
-    DEBUG["edge_sides"] = (len(left), len(left) >= 8)
-
-    lines = None
-    if min(len(top), len(left)) >= 8:
-        fit = [robust_line(*zip(*p)) for p in (top, bot, left, right)]
-        if None not in fit:
-            lt, lb, ll, lr = fit
-            dh, dv = abs(lt[0] - lb[0]), abs(ll[0] - lr[0])
-            DEBUG["slope_top_bottom"] = (dh, dh <= PAPER_SLOPE_TOL[0])
-            DEBUG["slope_left_right"] = (dv, dv <= PAPER_SLOPE_TOL[1])
-            if dh <= PAPER_SLOPE_TOL[0] and dv <= PAPER_SLOPE_TOL[1]:
-                lines = fit
-
-    def inter(lh, lv):  # lh: y = a*x + b, lv: x = c*y + d
-        (a, b), (c, d) = lh, lv
-        y = (a * d + b) / (1 - a * c)
-        return c * y + d, y
-
-    if lines:
-        lt, lb, ll, lr = lines
-        xc, yc = (cx0 + cx1) / 2, (ry0 + ry1) / 2
-        hgt = ((lb[0] * xc + lb[1]) - (lt[0] * xc + lt[1])) / math.sqrt(1 + ((lt[0] + lb[0]) / 2) ** 2)
-        wid = ((lr[0] * yc + lr[1]) - (ll[0] * yc + ll[1])) / math.sqrt(1 + ((ll[0] + lr[0]) / 2) ** 2)
-        quad_r = [inter(lt, ll), inter(lt, lr), inter(lb, lr), inter(lb, ll)]
-        method, ratio_tol = "edges", PAPER_RATIO_TOL
-    else:  # fallback: contour corners (noisier per frame, fine after the median)
-        q = quad_from_mask(valid)
-        if q is None:
-            return None, "Hold the paper flat and taut"
-        tl, tr, br, bl = q
-        wid, hgt = (dist(tl, tr) + dist(bl, br)) / 2, (dist(tl, bl) + dist(tr, br)) / 2
-        quad_r = [tuple(p) for p in q]
-        method, ratio_tol = "contour", PAPER_RATIO_TOL + 0.03
-    DEBUG["method"] = (method, True)
-
-    hv = hgt * vc
-    if not np.isfinite(wid) or not np.isfinite(hv) or wid <= 0 or hv <= 0:
-        return None, "Hold the paper flat and taut"
-    portrait = hv > wid
-    DEBUG["orientation"] = ("portrait" if portrait else "landscape", True)
-    if wid < (0.77 * MIN_PAPER_PX if portrait else MIN_PAPER_PX):
-        return None, "Step a little closer to the camera"
-    ratio = max(wid, hv) / min(wid, hv)
-    name = min(PAPERS, key=lambda p: abs(ratio / (PAPERS[p][0] / PAPERS[p][1]) - 1))
-    W, H = PAPERS[name]
-    err = abs(ratio / (W / H) - 1)
-    DEBUG["ratio_error"] = (err, err <= ratio_tol)
-    DEBUG["paper"] = (name, True)
-    if err > ratio_tol:
-        return None, "Hold the paper flat, facing the camera straight on"
-
-    Mi = cv2.invertAffineTransform(M)
-    quad = [(Mi[0, 0] * x + Mi[0, 1] * y + Mi[0, 2] + X0,
-             Mi[1, 0] * x + Mi[1, 1] * y + Mi[1, 2] + Y0) for x, y in quad_r]
-    return {"wid": wid, "hv": hv, "name": name, "quad": quad,
-            "horiz_mm": H if portrait else W}, "Hold still"
-
-
-def summarize_paper(samples, statures, f_px):
-    """Combines paper scale and body height measured in separate frames."""
-    names = [s["name"] for s in samples]
-    k, k_noise = robust_stats([s["horiz_mm"] / s["wid"] for s in samples])
-    st, st_noise = robust_stats(statures)
-    return {"name": max(set(names), key=names.count), "h0_mm": k * st,
-            "spread": math.hypot(k_noise / k, st_noise / st), "z_mm": f_px * k}
-
-
-# ------------------------------------------------------------ paper tracking
-def _edge_samples(grayf, p, q, search, n=28):
-    """Search along the outward normal of side p->q for the bright-to-dark step.
-    Returns sub-pixel edge points and their gradient strength."""
-    p, q = np.asarray(p, np.float32), np.asarray(q, np.float32)
-    d = q - p
-    L = float(np.hypot(d[0], d[1]))
-    if L < 10:
-        return None, None
-    out = np.array([d[1], -d[0]], np.float32) / L        # outward for tl,tr,br,bl order
-    t = np.linspace(0.15, 0.85, n, dtype=np.float32)      # skip the corners (fingers)
-    base = p + t[:, None] * d
-    offs = np.arange(-search, search + 1, dtype=np.float32)
-    coords = base[:, None, :] + offs[None, :, None] * out[None, None, :]
-    prof = cv2.remap(grayf, np.ascontiguousarray(coords[..., 0]), np.ascontiguousarray(coords[..., 1]),
-                     cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-    g = prof[:, :-1] - prof[:, 1:]                        # paper bright inside, darker outside
-    rows, k = np.arange(n), np.argmax(g, axis=1)
-    m = g.shape[1]
-    a, b, c = g[rows, np.clip(k - 1, 0, m - 1)], g[rows, k], g[rows, np.clip(k + 1, 0, m - 1)]
-    den = a - 2 * b + c
-    delta = np.where((k > 0) & (k < m - 1) & (np.abs(den) > 1e-6), 0.5 * (a - c) / den, 0.0)
-    pos = offs[0] + k + 0.5 + np.clip(delta, -0.5, 0.5)
-    return base + pos[:, None] * out, b
-
-
-def _fit_side(pe, peak, min_peak):
-    """Robust line (homogeneous) through the edge points; drops fingers/outliers."""
-    keep = peak >= min_peak
-    support = float(keep.mean())
-    line = None
-    for _ in range(2):
-        if keep.sum() < 8:
-            return None, support
-        vx, vy, x0, y0 = cv2.fitLine(pe[keep].astype(np.float32), cv2.DIST_HUBER, 0, 0.01, 0.01).ravel()
-        line = np.cross([x0, y0, 1.0], [x0 + vx, y0 + vy, 1.0])
-        res = np.abs((pe[:, 0] - x0) * vy - (pe[:, 1] - y0) * vx)
-        keep = keep & (res < 1.5)
-    return line, support
-
-
-class PaperTracker:
-    """Locks onto the paper after a few consistent colour detections, then follows
-    its four edges by gradient (no colour thresholds) until it is lost."""
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.quad, self.prev, self.misses, self.cands = None, None, 0, []
-
-    @property
-    def locked(self):
-        return self.quad is not None
-
-    @staticmethod
-    def _size(q, vc):
-        tl, tr, br, bl = q
-        return (dist(tl, tr) + dist(bl, br)) / 2, (clen(tl, bl, vc) + clen(tr, br, vc)) / 2
-
-    def offer(self, det, gray8, vc):
-        """Feed a colour detection. Locks on after LOCK_FRAMES consistent ones."""
-        q = np.array(det["quad"], np.float32)
-        if self.cands:
-            last = self.cands[-1]
-            if (np.linalg.norm(q.mean(0) - np.array(last["quad"], np.float32).mean(0)) > 0.1 * det["wid"]
-                    or abs(det["wid"] / last["wid"] - 1) > 0.05 or det["name"] != last["name"]
-                    or (det["hv"] > det["wid"]) != (last["hv"] > last["wid"])):
-                self.cands = []
-        self.cands.append(det)
-        if len(self.cands) >= LOCK_FRAMES:
-            self._lock(det, q, gray8, vc)
-        return self.locked
-
-    def _lock(self, det, q, gray8, vc):
-        grayf = cv2.GaussianBlur(gray8, (3, 3), 0).astype(np.float32)
-        peaks = []
-        for i in range(4):
-            _, pk = _edge_samples(grayf, q[i], q[(i + 1) % 4], 4)
-            if pk is None:
-                self.cands = []
-                return
-            peaks.append(float(np.median(pk)))
-        if min(peaks) < 8:                     # edges too faint to follow
-            self.cands = []
-            return
-        W, H = PAPERS[det["name"]]
-        wid, hv = self._size(q, vc)
-        self.quad, self.prev, self.misses = q, gray8, 0
-        self.contrast, self.name, self.horiz_mm = min(peaks), det["name"], det["horiz_mm"]
-        self.ratio, self.portrait, self.area = W / H, hv > wid, wid * hv
-        self.search = max(4, int(0.08 * wid))
-
-    def _predict(self, gray8):
-        """Move the last quad with the image motion around the paper (optical flow)."""
-        mask = np.zeros(gray8.shape, np.uint8)
-        cv2.fillConvexPoly(mask, self.quad.astype(np.int32), 255)
-        k = max(9, int(0.15 * dist(self.quad[0], self.quad[1]))) | 1
-        mask = cv2.dilate(mask, np.ones((k, k), np.uint8))
-        p0 = cv2.goodFeaturesToTrack(self.prev, 60, 0.01, 5, mask=mask)
-        if p0 is None or len(p0) < 6:
-            return self.quad
-        p1, st, _ = cv2.calcOpticalFlowPyrLK(self.prev, gray8, p0, None, winSize=(21, 21), maxLevel=3)
-        ok = st.ravel() == 1
-        if ok.sum() < 6:
-            return self.quad
-        M, _ = cv2.estimateAffinePartial2D(p0[ok], p1[ok], method=cv2.RANSAC, ransacReprojThreshold=2.0)
-        return self.quad if M is None else cv2.transform(self.quad[None], M)[0]
-
-    def _refine(self, grayf, q, search):
-        lines, supports = [], []
-        for i in range(4):
-            pe, pk = _edge_samples(grayf, q[i], q[(i + 1) % 4], search)
-            if pe is None:
-                return None, 0.0
-            line, sup = _fit_side(pe, pk, 0.4 * self.contrast)
-            supports.append(sup)
-            if line is None:
-                return None, min(supports)
-            lines.append(line)
-        corners = []
-        for i in range(4):                     # corner i = side i-1 x side i
-            v = np.cross(lines[i - 1], lines[i])
-            if abs(v[2]) < 1e-9:
-                return None, 0.0
-            corners.append(v[:2] / v[2])
-        return np.array(corners, np.float32), min(supports)
-
-    def _validate(self, q, pred, support, pts, vc):
-        if support < TRACK_MIN_SUPPORT:
-            return False, f"weak edges {support:.2f}"
-        wid, hv = self._size(q, vc)
-        if wid <= 0 or hv <= 0 or (hv > wid) != self.portrait:
-            return False, "orientation changed"
-        err = abs(max(wid, hv) / min(wid, hv) / self.ratio - 1)
-        DEBUG["track_ratio_err"] = (err, err <= PAPER_RATIO_TOL)
-        if err > PAPER_RATIO_TOL:
-            return False, f"ratio err {err:.3f}"
-        if abs(wid * hv / self.area - 1) > TRACK_MAX_AREA_CHANGE:
-            return False, "size jumped"
-        if np.max(np.linalg.norm(q - pred, axis=1)) > 0.15 * wid:
-            return False, "corner jumped"
-        tl, tr, br, bl = q
-        ang = lambda a, b: math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
-        if abs(ang(tl, tr) - ang(bl, br)) > TRACK_PARALLEL_DEG or \
-                abs(ang(tl, bl) - ang(tr, br)) > TRACK_PARALLEL_DEG:
-            return False, "not rectangular"
-        sh_px = dist(pts[L_SH], pts[R_SH])
-        sh_y, hip_y = mid(pts[L_SH], pts[R_SH])[1], mid(pts[L_HIP], pts[R_HIP])[1]
-        tcx = sum(pts[i][0] for i in (L_SH, R_SH, L_HIP, R_HIP)) / 4
-        cx, cy = q.mean(0)
-        if abs(cx - tcx) > 0.6 * sh_px or not (sh_y < cy < hip_y + 0.5 * (hip_y - sh_y)):
-            return False, "left the torso"
-        return True, ""
-
-    def update(self, gray8, pts, vc):
-        grayf = cv2.GaussianBlur(gray8, (3, 3), 0).astype(np.float32)
-        pred = self._predict(gray8)
-        self.prev = gray8
-        q, support, cur = None, 0.0, pred
-        for s in (self.search, max(3, self.search // 2)):   # coarse, then fine
-            r, sup = self._refine(grayf, cur, s)
-            if r is None:
-                break
-            cur, q, support = r, r, sup
-        DEBUG["track_support"] = (support, support >= TRACK_MIN_SUPPORT)
-        ok, why = (q is not None), "edges not found"
-        if ok:
-            ok, why = self._validate(q, pred, support, pts, vc)
-        if not ok:
-            self.quad = pred                   # keep following the motion
-            self.misses += 1
-            DEBUG["track"] = (f"miss {self.misses}: {why}", False)
-            if self.misses > TRACK_MAX_MISSES:
-                self.reset()
-                return None, "Lost the paper - hold it flat against your stomach"
-            return None, "Hold the paper flat and still"
-        self.quad, self.misses = q, 0
-        wid, hv = self._size(q, vc)
-        DEBUG["track"] = ("locked", True)
-        return {"wid": wid, "hv": hv, "name": self.name, "horiz_mm": self.horiz_mm,
-                "quad": [(float(x), float(y)) for x, y in q]}, "Hold still"
-
-
 # -------------------------------------------------------------- measurement
 def measure_front(pts, blob, tb, vc):
     """Front A-pose sample. Lengths are stored as fractions of height."""
@@ -1142,17 +603,11 @@ def summarize_turn(bins):
     return out
 
 
-def compute_results(paper, front, noise, turn):
-    Z, H0 = paper["z_mm"], paper["h0_mm"]
-    # The paper sits in front of the body's center; scale up to the body's plane
-    if turn:
-        height_mm = H0 / (1 - 0.5 * turn["waist_depth_rel"] * H0 / Z)
-        offset, off_unc = 0.5 * turn["waist_depth_rel"] * height_mm, 10.0
-    else:
-        offset, off_unc = DEFAULT_OFFSET_MM, 20.0
-        height_mm = H0 * (Z + offset) / Z
-    Zb, hcm = Z + offset, height_mm / 10
-    scale_rel = math.sqrt(paper["spread"] ** 2 + (off_unc / Zb) ** 2 + PAPER_SIZE_REL ** 2)
+def compute_results(height_cm, f_px, front, noise, turn):
+    """Everything is scaled from the entered height (floor to top of head)."""
+    hcm = height_cm
+    Zb = f_px * hcm * 10 / front["stature_px"]          # camera-to-body distance, mm
+    scale_rel = HEIGHT_UNC_CM / hcm
 
     def val(k):
         v = front.get(k)
@@ -1188,7 +643,7 @@ def compute_results(paper, front, noise, turn):
     rise = outseam - inseam if inseam and outseam else None
     arm, s2w, sho = val("arm_len"), val("shoulder_to_waist"), val("shoulder_outer")
     rows = [
-        ("Height (shoe sole to head)", hcm, unc(hcm, SYS_LEN), ""),
+        ("Height", hcm, None, "entered"),
         ("Bust / chest", *circ["bust"]), ("Waist", *circ["waist"]), ("Hips", *circ["hip"]),
         ("Shoulder width", sho, unc(sho, SYS_WIDTH, "shoulder_outer"), ""),
         ("Arm / sleeve length", arm, unc(arm, SYS_LEN, "arm_len", LANDMARK_ABS_CM), ""),
@@ -1204,8 +659,7 @@ def compute_results(paper, front, noise, turn):
                               "calf_w", "neck_w", "head_w")}
     av.update(waist_f=front["waist_f"], hip_f=front["hip_f"])
     av.update({f"{k}_d": d for k, d in depths.items()})
-    info = {"height_cm": hcm, "paper": paper["name"], "distance_cm": Zb / 10,
-            "paper_offset_cm": offset / 10, "turn_done": bool(turn)}
+    info = {"height_cm": hcm, "distance_cm": Zb / 10, "turn_done": bool(turn)}
     return rows, av, info
 
 
@@ -1214,8 +668,8 @@ def tilt_text(tilt, digits=1):
 
 
 def print_table(rows, info, res, tilt, tilt_src):
-    print(f"\nMeasurements ({info['paper']} paper, camera {res[0]}x{res[1]}, "
-          f"~{info['distance_cm'] / 100:.1f} m away, tilt {tilt_text(tilt)} ({tilt_src})):")
+    print(f"\nMeasurements (camera {res[0]}x{res[1]}, ~{info['distance_cm'] / 100:.1f} m away, "
+          f"tilt {tilt_text(tilt)} ({tilt_src})):")
     for label, v, u, note in rows:
         print(f"  {label:<28}{fmt_pm(v, u)}{'  (' + note + ')' if note else ''}")
 
@@ -1223,12 +677,12 @@ def print_table(rows, info, res, tilt, tilt_src):
 def save_json(rows, info, res, tilt, tilt_src):
     data = {
         "camera_resolution": f"{res[0]}x{res[1]}",
-        "paper": info["paper"],
+        "height_entered_cm": round(info["height_cm"], 1),
         "distance_m": round(info["distance_cm"] / 100, 2),
         "camera_tilt_deg": round(tilt, 1) if tilt is not None else None,
         "tilt_source": tilt_src,
         "turn_scan_done": info["turn_done"],
-        "height_reference": "bottom of shoe sole = 0, measured to top of head",
+        "scale_reference": "entered height = floor to top of head (scanned barefoot)",
         "measurements": {
             label: None if v is None else {
                 "in": round(to_in(v), 1), "cm": round(v, 1),
@@ -1243,7 +697,7 @@ def save_json(rows, info, res, tilt, tilt_src):
 
 # ----------------------------------------------------------------- checks
 def feet_in_frame(pts, vis, blob, h):
-    """Feet are in frame if the shoe sole is found above the bottom edge."""
+    """Feet are in frame if the sole is found above the bottom edge."""
     sole = find_sole(blob, pts, foot_margin(pts))
     lowest = max(pts[i][1] for i in FEET)
     lm_ok, sole_ok = lowest < h - 3, sole is not None and sole < h - 3
@@ -1262,7 +716,7 @@ def full_body_check(pts, vis, blob, tb, w, h, need=FULL_BODY, min_vis=0.6):
     if head_cut:
         return False, "Head is cut off: step back, or tilt the screen back"
     if feet_cut:
-        return False, "Shoes are cut off: step back, or tilt the screen forward"
+        return False, "Feet are cut off: step back, or tilt the screen forward"
     xs = np.flatnonzero(blob.any(axis=0))
     if xs[0] <= 3 or xs[-1] >= w - 4:
         return False, "Move toward the center of the frame"
@@ -1299,7 +753,7 @@ def turn_check(pts, vis, blob, tb, h):
         return False, "Head is cut off"
     sole = find_sole(blob, pts, foot_margin(pts))
     if sole is None or sole >= h - 3:
-        return False, "Shoes are cut off"
+        return False, "Feet are cut off"
     if max(vis[L_HIP], vis[R_HIP]) < 0.5:
         return False, "Keep your whole body in view"
     sh_y = min(pts[L_SH][1], pts[R_SH][1])
@@ -1422,8 +876,8 @@ def draw_banner(img, title, hint, progress):
 
 def draw_panel(img, rows, info, res, tilt, tilt_src):
     s = img.shape[1] / 1280
-    lines = [f"{info['paper']} paper | camera {res[0]}x{res[1]} | "
-             f"~{info['distance_cm'] / 100:.1f} m | tilt {tilt_text(tilt, 0)} ({tilt_src})"]
+    lines = [f"camera {res[0]}x{res[1]} | ~{info['distance_cm'] / 100:.1f} m | "
+             f"tilt {tilt_text(tilt, 0)} ({tilt_src})"]
     for label, v, u, note in rows:
         val = fmt_height(v, u) if label.startswith("Height") and v else fmt_pm(v, u)
         lines.append(f"{label}: {val}{' (' + note + ')' if note else ''}")
@@ -1435,34 +889,12 @@ def draw_panel(img, rows, info, res, tilt, tilt_src):
 
 
 def draw_debug(img):
-    """Paper candidate pixels in magenta, plus each check (green pass / red fail)."""
-    if "cand" in CAND_VIEW:
-        m, x0, y0 = CAND_VIEW.pop("cand")
-        sub, sel = img[y0:y0 + m.shape[0], x0:x0 + m.shape[1]], m > 0
-        sub[sel] = (sub[sel] * 0.4 + np.array([255, 0, 255]) * 0.6).astype(np.uint8)
-        cv2.rectangle(img, (x0, y0), (x0 + m.shape[1], y0 + m.shape[0]), (255, 0, 255), 1)
+    """Each check in green (pass) or red (fail)."""
     s = img.shape[1] / 1280
     for i, (k, (v, ok)) in enumerate(DEBUG.items()):
         txt = f"{k}: {v:.3f}" if isinstance(v, (float, np.floating)) else f"{k}: {v}"
         cv2.putText(img, txt, (int(15 * s), int(30 * s) + i * int(26 * s)), FONT, 0.6 * s,
                     (0, 200, 0) if ok else (0, 0, 255), max(1, int(2 * s)), cv2.LINE_AA)
-
-
-class HintFilter:
-    """Shows a new hint only after it persists, so messages don't flicker."""
-
-    def __init__(self, delay=HINT_DELAY):
-        self.delay, self.shown, self.cand, self.t = delay, "", None, 0.0
-
-    def __call__(self, hint, now):
-        if hint == self.shown:
-            self.cand = None
-        else:
-            if hint != self.cand:
-                self.cand, self.t = hint, now
-            if now - self.t >= self.delay or not self.shown:
-                self.shown, self.cand = hint, None
-        return self.shown
 
 
 class Voice:
@@ -1488,96 +920,25 @@ class Voice:
             self.proc.terminate()
 
 
-# -------------------------------------------------------------- paper step
-class PaperStep:
-    """Collects paper scale and full-body height in separate frames (so they don't
-    both have to pass at once), while making sure the person stays on one spot.
-    The paper is found by colour inside the person's outline, then tracked by edges."""
-
-    def __init__(self):
-        self.hints = HintFilter()
-        self.tracker = PaperTracker()
-        self.reset()
-
-    def reset(self):
-        self.paper, self.stature, self.anchor = [], [], None
-        self.tracker.reset()
-
-    def _moved(self, pts):
-        cur = np.array([*mid(pts[L_HIP], pts[R_HIP]), dist(pts[L_SH], pts[R_SH])])
-        if self.anchor is not None:
-            dx, dy, ds = np.abs(cur - self.anchor)
-            sh = self.anchor[2]
-            if dx > 0.4 * sh or dy > 0.4 * sh or ds / sh > 0.15:
-                self.reset()
-                self.anchor = cur
-                return True
-            self.anchor = 0.9 * self.anchor + 0.1 * cur
-        else:
-            self.anchor = cur
-        return False
-
-    def update(self, frame, out, pts, vis, blob, tb, vc, stable, shift, now, region):
-        DEBUG["cam_shift_px"] = (shift, stable)
-        if not stable:
-            hint = "Camera moving - hold still"
-        elif self._moved(pts):
-            hint = "Stay on the same spot"
-        else:
-            h, w = frame.shape[:2]
-            body_ok, body_hint = full_body_check(pts, vis, blob, tb, w, h, CORE, 0.5)
-            DEBUG["full_body"] = ("ok" if body_ok else body_hint[:30], body_ok)
-            if body_ok:
-                sole, crown = sole_and_crown(blob, pts, tb)
-                self.stature.append((sole - crown) * vc)
-                draw_height_ruler(out, blob, sole, crown)
-
-            gray8 = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            if self.tracker.locked:
-                det, det_hint = self.tracker.update(gray8, pts, vc)
-            else:
-                det, det_hint = detect_paper(frame, pts, vis, vc, region)
-                if det and not self.tracker.offer(det, gray8, vc):
-                    cv2.polylines(out, [np.array(det["quad"], np.int32)], True, (0, 255, 255), 2, cv2.LINE_AA)
-                    det, det_hint = None, f"Paper found - locking on ({len(self.tracker.cands)}/{LOCK_FRAMES})"
-            DEBUG["paper_lock"] = ("locked" if self.tracker.locked else "searching", self.tracker.locked)
-            DEBUG["paper_check"] = ("ok" if det else det_hint[:40], bool(det))
-            if det:
-                self.paper.append(det)
-                cv2.polylines(out, [np.array(det["quad"], np.int32)], True, (0, 255, 0), 2, cv2.LINE_AA)
-            elif self.tracker.locked:   # following, but this frame failed validation
-                cv2.polylines(out, [self.tracker.quad.astype(np.int32)], True, (0, 140, 255), 2, cv2.LINE_AA)
-
-            if not body_ok and len(self.stature) < STATURE_MIN_FRAMES:
-                hint = body_hint
-            elif not det and len(self.paper) < PAPER_MIN_FRAMES:
-                hint = det_hint
-            else:
-                hint = "Paper found - hold still, eyes on the camera"
-        return self.hints(hint, now)
-
-    def progress(self):
-        DEBUG["paper_frames"] = (f"{len(self.paper)}/{PAPER_MIN_FRAMES}", True)
-        DEBUG["height_frames"] = (f"{len(self.stature)}/{STATURE_MIN_FRAMES}", True)
-        return min(len(self.paper) / PAPER_MIN_FRAMES, len(self.stature) / STATURE_MIN_FRAMES, 1.0)
-
-    def result(self, f_px):
-        """Summary once there are enough consistent frames, otherwise None."""
-        if len(self.paper) < PAPER_MIN_FRAMES or len(self.stature) < STATURE_MIN_FRAMES:
-            return None
-        s = summarize_paper(self.paper, self.stature, f_px)
-        return s if len(self.paper) >= PAPER_MAX_FRAMES or s["spread"] < PAPER_TARGET_SPREAD else None
-
-
 # ------------------------------------------------------------------- main
 def main():
-    ap = argparse.ArgumentParser(description="Webcam body measurements with a paper reference")
+    ap = argparse.ArgumentParser(description="Webcam body measurements scaled by your height")
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--max-width", type=int, default=1920, help="highest capture width to try")
     ap.add_argument("--hfov", type=float, default=68.0, help="camera horizontal field of view")
     ap.add_argument("--tilt-deg", type=float, default=None, help="manual camera tilt")
+    ap.add_argument("--height-cm", type=float, default=None, help="your height in cm (skips the start page)")
+    ap.add_argument("--height-in", type=float, default=None,
+                    help="your height in inches, e.g. 5'5\" = 65 (skips the start page)")
     ap.add_argument("--no-voice", action="store_true")
     args = ap.parse_args()
+
+    known_cm = args.height_cm or (args.height_in * CM_PER_IN if args.height_in else None)
+    if known_cm and not HEIGHT_MIN_CM <= known_cm <= HEIGHT_MAX_CM:
+        raise SystemExit(f"Height must be between {HEIGHT_MIN_CM:.0f} and {HEIGHT_MAX_CM:.0f} cm.")
+    height_unit = "cm" if args.height_cm else "in"
+    height_text, height_err = "", ""
+    start = "front_wait" if known_cm else "height"
 
     ensure_model()
     pose = vision.PoseLandmarker.create_from_options(vision.PoseLandmarkerOptions(
@@ -1589,24 +950,19 @@ def main():
     print(f"Camera delivers {res[0]}x{res[1]}")
 
     voice, motion = Voice(not args.no_voice), MotionMonitor()
-    vp, paper_step = VanishingTilt(args.hfov, args.tilt_deg), PaperStep()
-    bg, locate_hints = BackgroundModel(), HintFilter()
+    vp = VanishingTilt(args.hfov, args.tilt_deg)
     state, front_s = None, []
-    paper = front = noise = turn = ref = rows = av = info = None
-    turn_bins, turn_t0, hold_t, misses = None, None, None, 0
-    lost_t = None
+    front = noise = turn = ref = rows = av = info = None
+    turn_bins, turn_t0, hold_t = None, None, None
+    lost_t, f_px, now = None, 1.0, time.monotonic()
     show = {"avatar": True, "mask": False, "lines": False, "debug": True}
     was_stable, t0, last_ts = True, time.perf_counter(), -1
 
     def go(new):
-        nonlocal state, hold_t, misses, turn_bins, turn_t0
-        state, hold_t, misses = new, None, 0
-        if new == "locate":
-            bg.reset()
-            paper_step.reset()
+        nonlocal state, hold_t, turn_bins, turn_t0
+        state, hold_t = new, None
+        if new in ("height", "front_wait"):
             front_s.clear()
-        elif new == "paper":
-            paper_step.reset()
         elif new == "turn":
             turn_bins = {k: [[] for _ in range(YAW_BINS)] for k in ("bust", "waist", "hip")}
             turn_t0 = time.monotonic()
@@ -1614,8 +970,8 @@ def main():
 
     def refresh():
         nonlocal rows, av, info
-        if paper is not None and front is not None:
-            rows, av, info = compute_results(paper, front, noise, turn)
+        if front is not None and known_cm:
+            rows, av, info = compute_results(known_cm, f_px, front, noise, turn)
             print_table(rows, info, res, vp.tilt, vp.source)
             save_json(rows, info, res, vp.tilt, vp.source)
 
@@ -1632,7 +988,7 @@ def main():
             go(nxt)
         return ok_msg, progress
 
-    go("locate")
+    go(start)
     while True:
         ok_, frame = cap.read()
         if not ok_:
@@ -1641,10 +997,36 @@ def main():
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]
         f_px = (w / 2) / math.tan(math.radians(args.hfov / 2))
+        now = time.monotonic()
+
+        # ---------------- start page: height entry
+        if state == "height":
+            preview_cm, _ = parse_height(height_text, height_unit)
+            out = frame.copy()
+            draw_height_page(out, height_text, height_unit, preview_cm, height_err)
+            cv2.imshow(WINDOW, out)
+            code = cv2.waitKey(1)
+            k = -1 if code == -1 else code & 0xFF
+            if k in (27, ord("q"), ord("Q")):
+                break
+            before = (height_text, height_unit)
+            height_text, height_unit, enter = edit_height(k, height_text, height_unit)
+            if (height_text, height_unit) != before:
+                height_err = ""
+            if enter:
+                cm, err = parse_height(height_text, height_unit)
+                if cm:
+                    known_cm = cm
+                    print(f"Height: {fmt_height(cm)}")
+                    go("front_wait")
+                else:
+                    height_err = err
+            continue
+
+        # ---------------- pose + camera checks for the scan steps
         ts = last_ts = max(int((time.perf_counter() - t0) * 1000), last_ts + 1)
         result = pose.detect_for_video(
             mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)), ts)
-        now = time.monotonic()
         out, hint, progress = frame.copy(), "", None
 
         mask = blob = tb = pts = vis = world = None
@@ -1665,63 +1047,8 @@ def main():
         tilt = vp.tilt
         vc = tilt_factor(tilt)
 
-        # ---------------- step 1: locate (learn the empty scene)
-        if state == "locate":
-            DEBUG.clear()
-            if not stable:
-                bg.reset()
-                raw_hint = "Camera moving - keep the laptop still"
-            elif not person:
-                raw_hint = "Step into view"
-            else:
-                body_ok, body_hint = full_body_check(pts, vis, blob, tb, w, h, CORE, 0.5)
-                raw_hint = bg.update(frame, mask, pts, body_ok) or body_hint
-            hint = locate_hints(raw_hint, now)
-            voice.say(hint, interrupt=False, min_gap=2)
-            if bg.cnt is not None:
-                sel = bg.unseen(w, h)
-                out[sel] = (out[sel] * 0.6 + np.array([0, 0, 255]) * 0.4).astype(np.uint8)
-            progress = bg.progress()
-            if show["debug"]:
-                draw_debug(out)
-            if bg.finished:
-                go("paper")
-
-        # ---------------- step 2: paper (white check inside the person only)
-        elif state == "paper":
-            DEBUG.clear()
-            if not stable:
-                go("locate")              # the learned background no longer lines up
-                hint = "Camera moved - redo step 1"
-            elif person:
-                fg, known = bg.classify(frame, mask)
-                region = paper_region(mask, fg, known, pts)
-                if region is None:
-                    hint = "Step into view"
-                else:
-                    if show["debug"]:
-                        cnts = cv2.findContours(region.astype(np.uint8), cv2.RETR_EXTERNAL,
-                                                cv2.CHAIN_APPROX_SIMPLE)[-2]
-                        cv2.drawContours(out, cnts, -1, (255, 255, 0), 1, cv2.LINE_AA)
-                    hint = paper_step.update(frame, out, pts, vis, blob, tb, vc, stable,
-                                             motion.shift, now, region)
-                    if hint.startswith(("Step", "Head", "Shoes", "Move", "Come", "Stay", "Lost", "Keep")):
-                        voice.say(hint, interrupt=False, min_gap=5)
-            else:
-                hint = "Step into view"
-            if state == "paper":
-                progress = paper_step.progress()
-                res_paper = paper_step.result(f_px)
-                if show["debug"]:
-                    draw_debug(out)
-                if res_paper:
-                    paper = res_paper
-                    print(f"Paper: {paper['name']}, ~{paper['z_mm'] / 1000:.2f} m away, "
-                          f"spread {100 * paper['spread']:.2f}%")
-                    go("front_wait")
-
-        # ---------------- step 3: front A-pose
-        elif state in ("front_wait", "front"):
+        # ---------------- step 1: front A-pose
+        if state in ("front_wait", "front"):
             DEBUG.clear()
             good, hint = framing_check(pts, vis, blob, tb, w, h) if person else (False, "Step into view")
             if good and not stable:
@@ -1757,7 +1084,7 @@ def main():
                 DEBUG["front_frames"] = (f"{len(front_s)}/{FRONT_FRAMES}", True)
                 draw_debug(out)
 
-        # ---------------- step 4: turn in place
+        # ---------------- step 2: turn in place
         elif state in ("turn_wait", "turn"):
             good, hint = turn_check(pts, vis, blob, tb, h) if person else (False, "Step into view")
             if good and not stable:
@@ -1804,18 +1131,19 @@ def main():
         if rows and state == "live":
             draw_panel(out, rows, info, res, vp.tilt, vp.source)
         draw_banner(out, STEPS[state][0], hint, progress)
-        cv2.imshow("Body Measure", out)
+        cv2.imshow(WINDOW, out)
 
-        key = chr(cv2.waitKey(1) & 0xFF)
+        code = cv2.waitKey(1)
+        key = "" if code == -1 else chr(code & 0xFF)
         if key == "q":
             break
         elif key == "n" and state in ("turn_wait", "turn"):
             refresh()
             go("live")
         elif key == "r":
-            paper = front = noise = turn = ref = rows = av = info = None
-            go("locate")
-        elif key in "lamd" and key:
+            front = noise = turn = ref = rows = av = info = None
+            go("height")
+        elif key and key in "lamd":
             name = {"l": "lines", "a": "avatar", "m": "mask", "d": "debug"}[key]
             show[name] = not show[name]
 
@@ -1826,4 +1154,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main
+    main()
