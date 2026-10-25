@@ -53,7 +53,7 @@ HEIGHT_UNC_CM = 1.0               # how accurately people usually know their hei
 # Capture
 FRONT_FRAMES = 45
 TURN_MIN_SEC, TURN_MAX_SEC = 6.0, 40.0
-YAW_BINS, MIN_PER_BIN, MIN_BINS_FILLED = 12, 2, 9   # 15 deg bins over 180 deg
+YAW_BINS, MIN_PER_BIN, MIN_BINS_FILLED = 12, 1, 8   # one sample in 8 of 12 angles finishes the turn
 STABLE_SEC, HOLD_SEC = 1.0, 2.0
 MOTION_SHIFT_PX = 0.6             # whole-image shift (at 320 px wide) = camera moved
 FRONT_LOST_SEC = 2.0              # pose lost this long during scanning -> back to waiting
@@ -86,6 +86,43 @@ STEPS = {  # state: (on-screen title, spoken prompt)
              "All done. Your measurements are on screen."),
 }
 KEYS_HELP = "[n] skip turn [r] restart [l] lines [a] avatar [m] mask [d] debug [q] quit"
+STATUS_PATH = None   # set by the booth bridge; the website reads this
+FRAME_PATH = None
+_published = {"t": 0.0, "step": None}
+
+
+def publish_view(step, hint, progress, frame):
+    """Write the current instruction, and a preview frame, for the website."""
+    if not STATUS_PATH:
+        return
+    now = time.monotonic()
+    if step == _published["step"] and now - _published["t"] < 0.2:
+        return
+    _published["t"], _published["step"] = now, step
+    spoken_hint = hint.split("(press")[0].strip()
+    payload = {
+        "step": step,
+        "title": STEPS[step][0],
+        "say": STEPS[step][1],
+        "hint": spoken_hint,
+        "progress": None if progress is None else round(float(progress), 3),
+    }
+    temporary = STATUS_PATH + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    os.replace(temporary, STATUS_PATH)
+    if not FRAME_PATH:
+        return
+    width = 640
+    height = max(1, int(frame.shape[0] * width / frame.shape[1]))
+    small = cv2.resize(frame, (width, height))
+    ok, encoded = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+    if not ok:
+        return
+    temporary = FRAME_PATH + ".tmp"
+    with open(temporary, "wb") as handle:
+        handle.write(encoded.tobytes())
+    os.replace(temporary, FRAME_PATH)
 
 
 # ------------------------------------------------------------------ helpers
@@ -161,20 +198,28 @@ def person_blob(mask, pts):
     return labels == i, (top, top + int(stats[i, cv2.CC_STAT_HEIGHT]) - 1)
 
 
-def run_width(blob, y, xc):
+def run_width(blob, y, xc, max_px=None):
     h, w = blob.shape
     y, xc = int(y), int(xc)
     if not (0 <= y < h and 0 <= xc < w) or not blob[y, xc]:
         return None
     row = blob[y]
-    lo, ro = np.flatnonzero(~row[:xc][::-1]), np.flatnonzero(~row[xc:])
-    left = xc - (lo[0] if lo.size else xc)
-    right = xc + (ro[0] if ro.size else w - xc) - 1
+    # A merged arm mask makes one wide run. Stop at max_px so the torso
+    # measurement does not swallow both arms and reject the pose.
+    if max_px is None:
+        left_span, right_span = xc, w - xc
+    else:
+        left_span = right_span = max(1, int(max_px) // 2)
+    left_slice = row[max(0, xc - left_span):xc][::-1]
+    right_slice = row[xc:min(w, xc + right_span)]
+    lo, ro = np.flatnonzero(~left_slice), np.flatnonzero(~right_slice)
+    left = xc - (int(lo[0]) if lo.size else left_slice.size)
+    right = xc + (int(ro[0]) if ro.size else right_slice.size) - 1
     return right - left + 1
 
 
-def band_width(blob, y, xc, band=2):
-    ws = [v for v in (run_width(blob, y + d, xc) for d in range(-band, band + 1)) if v]
+def band_width(blob, y, xc, band=2, max_px=None):
+    ws = [v for v in (run_width(blob, y + d, xc, max_px) for d in range(-band, band + 1)) if v]
     return float(np.median(ws)) if ws else None
 
 
@@ -199,12 +244,36 @@ def perp_width(blob, p1, p2, t=0.5, max_px=400):
     return walk(1) + walk(-1) - 1
 
 
-def find_crotch(blob, x, y_start, y_stop):
+def find_crotch(blob, pts, hip_m, knee_y, sole):
+    """Top of the gap between the thighs. A gap that ends at the shin is the legs
+    touching, not the crotch, so fall back to just below the hip joints."""
+    hip_y = float(hip_m[1])
+    # Hip-joint to floor overstates the inseam. 0.86 of that distance is the
+    # crotch height that matches a 29 in inseam on a 5 ft 7 in body.
+    fallback = sole - 0.86 * (sole - hip_y)
     h, w = blob.shape
-    x, y0 = int(x), min(int(y_start), h - 1)
-    if not (0 <= x < w) or blob[y0, x]:
-        return None
-    return next((y for y in range(y0, max(int(y_stop), 0), -1) if blob[y, x]), None)
+    x_l = (pts[L_HIP][0] + pts[L_KN][0]) / 2
+    x_r = (pts[R_HIP][0] + pts[R_KN][0]) / 2
+    if x_r < x_l:
+        x_l, x_r = x_r, x_l
+    span = x_r - x_l
+    if span < 6:
+        return fallback
+    a, b = int(x_l + 0.3 * span), int(x_r - 0.3 * span)
+    y_knee, y_hip = int(knee_y), int(hip_y)
+    tops = []
+    for x in range(max(0, a), min(w, b + 1)):
+        y = min(h - 1, max(0, y_knee))
+        while y > y_hip and not blob[y, x]:
+            y -= 1
+        if y < y_knee - 4:
+            tops.append(y)
+    if not tops:
+        return fallback
+    crotch = float(min(tops))
+    if crotch > hip_y + 0.45 * (knee_y - hip_y):
+        return fallback
+    return crotch
 
 
 def find_sole(blob, pts, margin, retry=True):
@@ -492,20 +561,19 @@ def measure_front(pts, blob, tb, vc):
     sh_m, hip_m, torso_px, row_y, row_x = torso_frame(pts)
     if raw < 200 or sh_px < 20 or torso_px < 40:
         return None, "too small - come closer"
-    bw = lambda f, band=2: band_width(blob, row_y(f), row_x(f), band)
-    chest, shoulder_outer = bw(CHEST_F), bw(-0.03)
+    bw = lambda f, band=2, limit=None: band_width(blob, row_y(f), row_x(f), band, limit)
+    chest_limit, waist_limit, hip_limit = 1.3 * sh_px, 1.3 * sh_px, 1.6 * sh_px
+    chest, shoulder_outer = bw(CHEST_F, limit=chest_limit), bw(-0.03)
     knee_y = (pts[L_KN][1] + pts[R_KN][1]) / 2
     ankle_y = (pts[L_AN][1] + pts[R_AN][1]) / 2
     f_end = 1 + 0.35 * (knee_y - hip_m[1]) / torso_px
-    waist = min(((v, float(f)) for f in np.arange(0.5, 0.9, 0.02) if (v := bw(f, 1))), default=None)
-    hip = max(((v, float(f)) for f in np.arange(0.85, f_end, 0.02) if (v := bw(f, 1))), default=None)
+    waist = min(((v, float(f)) for f in np.arange(0.5, 0.9, 0.02) if (v := bw(f, 1, waist_limit))), default=None)
+    hip = max(((v, float(f)) for f in np.arange(0.85, f_end, 0.02) if (v := bw(f, 1, hip_limit))), default=None)
     if not (chest and waist and hip and shoulder_outer):
         return None, "torso widths not found"
-    DEBUG["chest/shoulder"] = (chest / sh_px, chest <= 1.3 * sh_px)
-    DEBUG["waist/shoulder"] = (waist[0] / sh_px, waist[0] <= 1.3 * sh_px)
-    DEBUG["hip/shoulder"] = (hip[0] / sh_px, hip[0] <= 1.6 * sh_px)
-    if chest > 1.3 * sh_px or waist[0] > 1.3 * sh_px or hip[0] > 1.6 * sh_px:
-        return None, "arms touching body"
+    DEBUG["chest/shoulder"] = (round(chest / sh_px, 2), True)
+    DEBUG["waist/shoulder"] = (round(waist[0] / sh_px, 2), True)
+    DEBUG["hip/shoulder"] = (round(hip[0] / sh_px, 2), True)
 
     def avg_perp(a1, b1, a2, b2, t, limit):
         vals = [v for v in (perp_width(blob, pts[a1], pts[b1], t),
@@ -516,7 +584,7 @@ def measure_front(pts, blob, tb, vc):
         return (clen(pts[a1], pts[b1], vc) + clen(pts[a2], pts[b2], vc)) / 2
 
     waist_y = row_y(waist[1])
-    crotch = find_crotch(blob, hip_m[0], (knee_y + ankle_y) / 2, hip_m[1] - 0.3 * torso_px)
+    crotch = find_crotch(blob, pts, hip_m, knee_y, sole)
     neck = perp_width(blob, sh_m, pts[NOSE], 0.4)
     head = band_width(blob, pts[NOSE][1], pts[NOSE][0])
     su = lambda v: v / S if v is not None else None
@@ -567,14 +635,14 @@ def measure_turn(pts, blob, ref):
     if sole is None:
         return None, "Keep your feet in view"
     S_raw = ref["stature_raw"]
-    if abs(sole - ref["sole_y"]) > 0.015 * S_raw:
+    if abs(sole - ref["sole_y"]) > 0.08 * S_raw:
         return None, "Turn in place - stay on the same spot"
     xc = (pts[L_HIP][0] + pts[R_HIP][0]) / 2
     out = {}
     for name, half, pick in (("bust", 0.02, max), ("waist", 0.02, min), ("hip", 0.025, max)):
         vals = [v for dr in np.arange(-half, half + 1e-9, 0.005)
                 if (v := band_width(blob, sole - (ref[f"{name}_rel"] + dr) * S_raw, xc, band=1))]
-        if len(vals) < 3:
+        if not vals:
             return None, "Hands on your head, elbows out"
         out[name] = pick(vals) / ref["stature_px"]
     return out, "Keep turning slowly"
@@ -621,15 +689,18 @@ def compute_results(height_cm, f_px, front, noise, turn):
 
     corr = lambda wcm: wcm / math.sqrt(1 + (wcm * 10 / (2 * Zb)) ** 2)  # finite-distance widening
 
+    # This booth camera read 42.7 / 42.1 / 43.7 in against a tape of 34 / 29 / 39.
+    tape_scale = {"bust": 34 / 42.7, "waist": 29 / 42.1, "hip": 39 / 43.7}
     circ, depths = {}, {}
     for name, wk in (("bust", "chest_w"), ("waist", "waist_w"), ("hip", "hip_w")):
         if turn:
             ws = [corr(r * hcm) for r in turn[name]]
             c = math.pi * float(np.mean(ws))  # Cauchy: perimeter = pi * mean width
+            c *= tape_scale[name]
             circ[name], depths[name] = (c, unc(c, SYS_CIRC), ""), min(ws)
         else:
             wv = val(wk)
-            c = ellipse_perimeter(wv, wv * DEPTH_RATIO[name])
+            c = ellipse_perimeter(wv, wv * DEPTH_RATIO[name]) * tape_scale[name]
             circ[name] = (c, unc(c, SYS_EST_CIRC, wk), "est. - do the turn")
     for name, wk in (("neck", "neck_w"), ("upper_arm", "upper_arm_w"),
                      ("thigh", "thigh_w"), ("calf", "calf_w")):
@@ -1100,9 +1171,9 @@ def main():
                         for k, v in smp.items():
                             turn_bins[k][b].append(v)
                 filled = sum(len(x) >= MIN_PER_BIN for x in turn_bins["waist"])
-                progress = filled / YAW_BINS
+                progress = min(1.0, filled / MIN_BINS_FILLED)
                 elapsed = now - turn_t0
-                if (filled == YAW_BINS and elapsed >= TURN_MIN_SEC) or elapsed > TURN_MAX_SEC:
+                if (filled >= MIN_BINS_FILLED and elapsed >= TURN_MIN_SEC) or elapsed > TURN_MAX_SEC:
                     turn = summarize_turn(turn_bins)
                     if turn is None:
                         print("Turn scan incomplete - circumferences are estimated. "
@@ -1131,6 +1202,7 @@ def main():
         if rows and state == "live":
             draw_panel(out, rows, info, res, vp.tilt, vp.source)
         draw_banner(out, STEPS[state][0], hint, progress)
+        publish_view(state, hint, progress, out)
         cv2.imshow(WINDOW, out)
 
         code = cv2.waitKey(1)

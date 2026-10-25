@@ -1,16 +1,18 @@
-import { defineConfig, type HtmlTagDescriptor, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type HtmlTagDescriptor, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import fs from 'node:fs'
 import path from 'node:path'
 
 import siteConfiguration from './.figma/make/site.json'
+import { attachLive } from './server/live'
 
 
 // Vite config — https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   // .figma/make/deploy-preview passes `--mode development` for cached-preview builds.
   const emitSourcemaps = mode === 'development'
+  const env = loadEnv(mode, __dirname, '')
 
   return {
     base: process.env.FIGMA_PUBLIC_URL ? `${process.env.FIGMA_PUBLIC_URL}/` : '/',
@@ -19,6 +21,7 @@ export default defineConfig(({ mode }) => {
       minify: !emitSourcemaps,
     },
     plugins: [
+      demoApi(env),
 react(),
       tailwindcss(),
       figmaSiteConfiguration(siteConfiguration),
@@ -48,6 +51,101 @@ react(),
     },
   }
 })
+
+function readBody(req: import('node:http').IncomingMessage) {
+  return new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = []
+    req.on('data', chunk => chunks.push(Buffer.from(chunk)))
+    req.on('end', () => resolve(Buffer.concat(chunks).toString()))
+    req.on('error', reject)
+  })
+}
+
+function demoApi(env: Record<string, string>): Plugin {
+  return {
+    name: 'booth-demo-api',
+    configureServer(server) {
+      attachLive(server, __dirname)
+      server.middlewares.use(async (req, res, next) => {
+        const url = req.url?.split('?')[0]
+        if (req.method !== 'POST' || (url !== '/api/ask' && url !== '/api/speak')) return next()
+        try {
+          const body = JSON.parse(await readBody(req) || '{}') as { text?: string; area?: string; question?: string; garment?: string; size?: string; covers?: string[]; wearer?: string }
+          if (url === '/api/speak') {
+            const key = env.CARTESIA_API_KEY
+            if (!key) {
+              res.statusCode = 503
+              res.end('Add CARTESIA_API_KEY to figma-web/.env.local')
+              return
+            }
+            const upstream = await fetch('https://api.cartesia.ai/tts/bytes', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${key}`,
+                'Cartesia-Version': '2026-08-14',
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                model_id: 'sonic-3.6',
+                transcript: String(body.text || '').slice(0, 500),
+                voice: 'db6b0ed5-d5d3-463d-ae85-518a07d3c2b4',
+                output_format: { container: 'wav', encoding: 'pcm_s16le', sample_rate: 44100 },
+                language: 'en',
+              }),
+            })
+            if (!upstream.ok) {
+              res.statusCode = upstream.status
+              res.end(await upstream.text())
+              return
+            }
+            res.setHeader('Content-Type', 'audio/wav')
+            res.end(Buffer.from(await upstream.arrayBuffer()))
+            return
+          }
+          const key = env.ANTHROPIC_API_KEY
+          if (!key) {
+            res.statusCode = 503
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'Add ANTHROPIC_API_KEY to figma-web/.env.local, then restart the dev server.' }))
+            return
+          }
+          const garment = String(body.garment || 'this garment').slice(0, 80)
+          const size = String(body.size || '').slice(0, 40)
+          const covers = Array.isArray(body.covers) ? body.covers.map(area => String(area)).join(', ') : String(body.area || '')
+          const wearer = String(body.wearer || 'the measurements from this scan').slice(0, 300)
+          const question = `Garment: ${garment}. Size: ${size}. Body area: ${body.area || 'general'}. Question: ${String(body.question || '').slice(0, 600)}`
+          const payload = {
+            model: 'claude-sonnet-5-5',
+            max_tokens: 400,
+            system: `You answer about one garment only: ${garment}, size ${size}. It touches these body areas: ${covers}. The wearer is ${wearer}. These measurements are webcam estimates, not a tape measure. Use only the measurements for the areas this garment covers. Do not mention any other garment, brand, or product. Answer in two or three short sentences. Do not give medical advice.`,
+            messages: [{ role: 'user', content: question }],
+          }
+          let upstream = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+            body: JSON.stringify({ ...payload, output_config: { effort: 'low' } }),
+          })
+          if (upstream.status === 400) {
+            upstream = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+              body: JSON.stringify(payload),
+            })
+          }
+          const data = await upstream.json() as { content?: { type: string; text?: string }[]; error?: { message?: string } }
+          res.statusCode = upstream.ok ? 200 : upstream.status
+          res.setHeader('Content-Type', 'application/json')
+          const answer = (data.content || []).filter(block => block.type === 'text').map(block => block.text || '').join('\n').trim()
+          res.end(JSON.stringify(upstream.ok ? { answer: answer || 'No answer came back.' } : { error: data.error?.message || 'Anthropic could not answer.' }))
+        } catch {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'The request failed.' }))
+        }
+      })
+    },
+  }
+}
 
 type FigmaSiteConfiguration = {
   title?: string

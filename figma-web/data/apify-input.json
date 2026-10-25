@@ -1,0 +1,13 @@
+{
+  "startUrls": [
+    { "url": "https://www.levi.com/US/en_US/info/sizeguide" },
+    { "url": "https://www.levi.com/US/en_US/clothing/women/outerwear/jean-jackets/original-trucker-jacket/p/299450031" },
+    { "url": "https://www.levi.com/US/en_US/clothing/women/jeans/straight/501-original-fit-womens-jeans/p/125010438" },
+    { "url": "https://therunhouse.com/products/nike-women-s-tech-fleece-full-zip-hoodie-nkfq4798" },
+    { "url": "https://www.filson.com/products/womens-cotton-crewneck-sweater-copper-brown" }
+  ],
+  "maxCrawlPages": 5,
+  "maxRequestRetries": 2,
+  "proxyConfiguration": { "useApifyProxy": true },
+  "pageFunction": "async function pageFunction(context) {\n  const { $, request } = context;\n  const tables = [];\n  $('table').each((i, el) => {\n    const rows = [];\n    $(el).find('tr').each((ri, tr) => {\n      const cells = [];\n      $(tr).find('th,td').each((ci, cell) => cells.push($(cell).text().replace(/\\s+/g, ' ').trim()));\n      if (cells.some(Boolean)) rows.push(cells);\n    });\n    if (rows.length) tables.push(rows.slice(0, 30));\n  });\n  return {\n    url: request.url,\n    title: String($('meta[property=\"og:title\"]').attr('content') || $('h1').first().text() || '').replace(/\\s+/g, ' ').trim().slice(0, 180),\n    image: $('meta[property=\"og:image\"]').attr('content') || '',\n    text: $('body').text().replace(/\\s+/g, ' ').trim().slice(0, 14000),\n    tables\n  };\n}"
+}
